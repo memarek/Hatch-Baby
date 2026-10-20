@@ -1,0 +1,39 @@
+[Unit]
+Description=Bedtime (Spotify + Hatch web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bedtime
+Group=bedtime
+# .env, the Spotify token and the session key live here, readable only by bedtime.
+WorkingDirectory=/var/lib/bedtime
+ExecStart=/opt/bedtime/venv/bin/python /opt/bedtime/hatch_ui.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+# Sandboxing: the app can only write its own state directory and has no privileges.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bedtime
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

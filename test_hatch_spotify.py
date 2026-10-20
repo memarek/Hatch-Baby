@@ -6,10 +6,12 @@ import hatch_spotify as hs
 
 
 class FakeRestIot:
-    def __init__(self, name="Nursery Rest"):
+    def __init__(self, name="Nursery Rest", playing=False):
         self.device_name = name
+        self.is_playing = playing
         self.calls = []
 
+    def _update(self, state): self.calls.append(("update", state))
     def set_volume(self, v): self.calls.append(("volume", v))
     def set_color(self, r, g, b, white=0, brightness=0): self.calls.append(("color", r, g, b, brightness))
     def set_sound_url(self, url): self.calls.append(("url", url))
@@ -22,6 +24,7 @@ class RestPlus:
         self.device_name = "Rest Plus"
         self.calls = []
 
+    def set_audio_track(self, track): self.calls.append(("track", track.name))
     def set_on(self, on): self.calls.append(("on", on))
     def set_volume(self, v): self.calls.append(("volume", v))
     def set_color(self, r, g, b, brightness, random=False): self.calls.append(("color", r, g, b, brightness))
@@ -78,15 +81,23 @@ class SpotifyDeviceTests(unittest.TestCase):
 
 
 class HatchTests(unittest.TestCase):
-    def test_nightlight_rest_iot(self):
+    def test_nightlight_leaves_volume_alone(self):
         d = FakeRestIot()
         hs.hatch_nightlight(d, (255, 106, 0), 20)
-        self.assertEqual(d.calls, [("volume", 0), ("color", 255, 106, 0, 20)])
+        self.assertEqual(d.calls, [("color", 255, 106, 0, 20)])
 
-    def test_nightlight_rest_plus_powers_on(self):
+    def test_nightlight_stops_playing_sound(self):
+        d = FakeRestIot(playing=True)
+        hs.hatch_nightlight(d, (255, 106, 0), 20)
+        self.assertEqual(d.calls, [
+            ("update", {"current": {"sound": {"id": hs.NO_SOUND_ID, "mute": True}}}),
+            ("color", 255, 106, 0, 20),
+        ])
+
+    def test_nightlight_rest_plus_powers_on_without_sound(self):
         d = RestPlus()
         hs.hatch_nightlight(d, (1, 2, 3), 10)
-        self.assertEqual(d.calls, [("on", True), ("volume", 0), ("color", 1, 2, 3, 10)])
+        self.assertEqual(d.calls, [("on", True), ("track", "NONE"), ("color", 1, 2, 3, 10)])
 
     def test_off(self):
         d = FakeRestIot()
@@ -107,10 +118,9 @@ class HatchTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     def test_play_args(self):
         args = hs.build_parser().parse_args(
-            ["play", "https://open.spotify.com/album/abc", "--speaker", "Echo", "--minutes", "30", "--no-shuffle"]
+            ["play", "https://open.spotify.com/album/abc", "--speaker", "Echo", "--no-shuffle"]
         )
         self.assertEqual(args.uri, "spotify:album:abc")
-        self.assertEqual(args.minutes, 30)
         self.assertFalse(args.shuffle)
 
 

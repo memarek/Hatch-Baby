@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1222">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Bedtime</title>
+<style>
+  :root { --bg: #0f1222; --card: #181c33; --card-2: #20253f; --line: #2b3152; --text: #e9e7f2; --muted: #9a9cb8; --accent: #ffb86b; --accent-ink: #2a1a05; --danger: #ff7a7a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+    background: radial-gradient(1200px 600px at 50% -200px, #232a52 0%, var(--bg) 60%) fixed, var(--bg);
+    color: var(--text); font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  form { width: 100%; max-width: 360px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 24px; }
+  h1 { margin: 0 0 18px; font-size: 26px; letter-spacing: -0.02em; }
+  h1 span { color: var(--accent); }
+  label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+  input { width: 100%; background: var(--card-2); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-size: 16px; }
+  input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button { width: 100%; margin-top: 16px; border: 0; border-radius: 14px; padding: 15px; font: inherit; font-weight: 700; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  .error { color: var(--danger); font-size: 14px; margin: 12px 0 0; min-height: 1em; }
+</style>
+</head>
+<body>
+<form method="post" action="/login">
+  <h1>Bed<span>time</span></h1>
+  <label for="password">Password</label>
+  <input type="password" id="password" name="password" autocomplete="current-password" required autofocus>
+  <p class="error" id="error"></p>
+  <button type="submit">Log in</button>
+</form>
+<script>
+  const error = new URLSearchParams(location.search).get("error");
+  document.getElementById("error").textContent =
+    error === "locked" ? "Too many wrong tries. Wait 15 minutes and try again." :
+    error === "wrong" ? "Wrong password." : "";
+</script>
+</body>
+</html>

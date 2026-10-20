@@ -1,21 +1,34 @@
 # Hatch-Baby
 
-Play Spotify at bedtime alongside your Hatch, from one command.
+Play Spotify at bedtime with your Hatch as the nightlight. Switch to a Hatch
+noise in the Hatch app whenever you're ready.
 
 ## Why it works this way
 
 No Hatch model (Rest, Rest+, Rest 2nd gen, Rest Baby, Restore) can play
 Spotify itself. Hatch has no Spotify Connect support, and Spotify doesn't
-give out raw audio URLs the Hatch could stream. So this script:
+give out raw audio URLs the Hatch could stream. So at bedtime this:
 
 1. starts your Spotify playlist on a **Spotify Connect speaker in the nursery**
    (Echo, Sonos, Google Nest, an old phone or tablet, ...), and
-2. sets the **Hatch to nightlight mode** with its own sound muted, so the
-   two don't play over each other.
+2. turns on the **Hatch nightlight** and stops any Hatch sound so the two
+   don't play over each other.
 
-You can also add a sleep timer that fades Spotify out and turns the Hatch off.
+The Hatch volume isn't changed. When you pick a noise in the Hatch app later,
+it plays at its usual level. Your Hatch subscription, favorites and routines
+are untouched.
 
-## Setup
+Music keeps playing until you stop it. To stop it automatically, use the
+speaker's own sleep timer (for example, "Alexa, stop the music in 45 minutes").
+
+## Run it from anywhere (recommended)
+
+Install it on an always-on machine and reach it from your phone through
+Tailscale. See **[deploy/README.md](deploy/README.md)**. One script sets up a
+Google Cloud VM, Raspberry Pi or spare computer, with nothing exposed to the
+internet.
+
+## Run it on your own computer
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -27,15 +40,12 @@ cp .env.example .env   # then fill it in
    - Create an app at <https://developer.spotify.com/dashboard>.
    - Add the redirect URI `http://127.0.0.1:8888/callback`.
    - Copy the Client ID and Client Secret into `.env`.
-   - The first time you run the script, it prints a URL. Open it, approve,
-     and paste the URL you get redirected to back into the terminal. The
-     token is cached in `.spotify_token_cache`.
 2. **Hatch**: put your Hatch Sleep app email and password in `.env`.
    The Hatch connection goes through the unofficial
    [`hatch_rest_api`](https://github.com/dahlb/ha_hatch) library, the same
    one the Home Assistant Hatch integration uses.
 
-## Web UI (easiest)
+### Web UI
 
 ```bash
 python hatch_ui.py
@@ -43,27 +53,24 @@ python hatch_ui.py
 
 <img src="docs/ui.png" width="300" align="right" alt="Bedtime UI">
 
-1. **First time only:** on the computer running it, open
-   <http://127.0.0.1:8888> and tap **Connect Spotify**. (Spotify only allows
-   this login from the computer itself.)
-2. After that, open `http://<computer's-IP>:8888` on your phone. Use
-   *Add to Home Screen* to get an app icon.
+Open <http://127.0.0.1:8888> and tap **Connect Spotify** once.
 
 From the page you can:
 - paste a playlist link (recent ones are saved as one-tap buttons)
 - pick the nursery speaker
-- set a sleep timer that fades out (and can turn the Hatch off)
-- pick a nightlight color and brightness
+- choose the nightlight color and brightness
 - control playback and volume
-- stop everything with one button
+- stop Spotify without touching the Hatch
 
-The page is dark so it won't light up the room. The server listens on your
-home network with no password, so anyone on your Wi-Fi can use it. Run
-`python hatch_ui.py --host 127.0.0.1` to limit it to this computer only.
+The page is dark so it won't light up the room. By default only this computer
+can open it. To use it from your phone on home Wi-Fi, set `UI_PASSWORD` in
+`.env` and run `python hatch_ui.py --host 0.0.0.0`, then open
+`http://<computer's-IP>:8888`. The Spotify login still has to happen on the
+computer itself.
 
 <br clear="right">
 
-## Command line usage
+### Command line
 
 ```bash
 # See what's available
@@ -73,12 +80,12 @@ python hatch_spotify.py devices
 python hatch_spotify.py play https://open.spotify.com/playlist/37i9dQZF1DWZd79rJ6a7lp \
     --speaker "Nursery Echo" --volume 25
 
-# Use the defaults from .env, fade out after 45 minutes, then turn the Hatch off
-python hatch_spotify.py play --minutes 45 --hatch-off-after
-
-# Stop
-python hatch_spotify.py stop --hatch-off
+# Stop Spotify (add --hatch-off to turn the Hatch off too)
+python hatch_spotify.py stop
 ```
+
+The first command-line run prints a Spotify login URL. Open it, approve, and
+paste the URL you're redirected to back into the terminal.
 
 `play` options: `--color ff0000`, `--brightness 10`, `--shuffle/--no-shuffle`,
 `--hatch "Nursery"` (if you have several Hatches), and `--no-hatch`.
@@ -93,14 +100,6 @@ Spotify:
 python hatch_spotify.py play-url https://example.com/lullaby.mp3 --volume 40
 ```
 
-## Automating bedtime
-
-To run it every night at 7:30pm with cron (`crontab -e`):
-
-```
-30 19 * * * cd /path/to/Hatch-Baby && .venv/bin/python hatch_spotify.py play --minutes 60 --hatch-off-after
-```
-
 ## Tests
 
 ```bash
@@ -109,7 +108,7 @@ python -m unittest -v
 
 ## Notes
 
-- The Spotify speaker must show up in `devices`. If it doesn't, open Spotify
+- The Spotify speaker must show up in the list. If it doesn't, open Spotify
   and play something on it once.
 - The Hatch API is unofficial and could break if Hatch changes its cloud.
 - Keep `.env` private; it's already in `.gitignore`.

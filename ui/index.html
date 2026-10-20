@@ -88,8 +88,6 @@
   .custom-color input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
   .glow { height: 10px; border-radius: 999px; margin: 14px 0 16px; transition: background .2s, box-shadow .2s; }
 
-  .timer { display: flex; align-items: center; justify-content: space-between; background: var(--card-2); border-radius: 14px; padding: 12px 14px; margin-bottom: 14px; }
-  .timer strong { font-variant-numeric: tabular-nums; font-size: 20px; }
 
   details summary { cursor: pointer; color: var(--muted); list-style: none; }
   details summary::-webkit-details-marker { display: none; }
@@ -107,13 +105,16 @@
 <main>
   <header>
     <h1>Bed<span>time</span></h1>
-    <button class="ghost" id="refresh" aria-label="Refresh">↻</button>
+    <div class="row" style="flex:none;gap:6px">
+      <button class="ghost" id="refresh" aria-label="Refresh">↻</button>
+      <form method="post" action="/logout" id="logoutForm" class="hidden" style="margin:0"><button class="ghost" style="white-space:nowrap;font-size:14px">Log out</button></form>
+    </div>
   </header>
 
   <section class="card hidden" id="connect">
     <h2>Spotify</h2>
-    <p class="muted">Connect your Spotify Premium account once. Do this on the computer running the app.</p>
-    <button class="spotify" onclick="location.href='/login'">Connect Spotify</button>
+    <p class="muted">Connect your Spotify Premium account. You only need to do this once.</p>
+    <button class="spotify" id="connectBtn">Connect Spotify</button>
   </section>
 
   <section class="card" id="nowCard">
@@ -149,19 +150,8 @@
     </label>
     <div class="switch"><span>Shuffle</span><input type="checkbox" id="shuffle"></div>
 
-    <div class="field">
-      <span class="muted" style="display:block;margin-bottom:6px">Sleep timer</span>
-      <div class="chips" id="timerChips"></div>
-    </div>
-    <div class="switch" id="offAfterRow"><span>Turn Hatch off when timer ends</span><input type="checkbox" id="offAfter"></div>
-
-    <div class="timer hidden" id="timerBox">
-      <span>Fading out in <strong id="timerLeft">--:--</strong></span>
-      <button class="ghost danger" id="cancelTimer">Cancel</button>
-    </div>
-
     <button class="primary" id="startBtn">🌙 Start bedtime</button>
-    <button class="ghost danger" id="stopBtn" style="width:100%;margin-top:8px">Stop everything</button>
+    <button class="ghost danger" id="stopBtn" style="width:100%;margin-top:8px">Stop Spotify</button>
   </section>
 
   <section class="card">
@@ -183,7 +173,7 @@
       <button id="applyLight">Apply light</button>
       <button id="hatchOff" class="danger">Hatch off</button>
     </div>
-    <p class="muted" style="margin:12px 0 0">The Hatch's own sound is muted while Spotify plays.</p>
+    <p class="muted" style="margin:12px 0 0">Bedtime stops any Hatch sound so it won't play over Spotify. When you're ready, pick a noise in the Hatch app as usual.</p>
   </section>
 
   <section class="card">
@@ -207,14 +197,13 @@ const PRESETS = [
   ["#ff2a00", "Red (best for sleep)"], ["#ff6a00", "Warm orange"], ["#ffb000", "Amber"],
   ["#ff8fb1", "Soft pink"], ["#7a5cff", "Lavender"], ["#2f7bff", "Blue"], ["#2fd38a", "Green"], ["#fff2d6", "Warm white"],
 ];
-const TIMERS = [0, 15, 30, 45, 60, 90];
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("bedtime." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("bedtime." + k, JSON.stringify(v)); } catch {} },
 };
 
-let state = null, color = store.get("color", null), minutes = store.get("minutes", 30), timerEndsAt = null;
+let state = null, color = store.get("color", null);
 
 function toast(msg, isError) {
   const t = $("toast");
@@ -228,6 +217,7 @@ async function api(path, body) {
   const res = await fetch(path, body === undefined ? {} : {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
+  if (res.status === 401) { location.href = "/login"; throw new Error("Please log in again"); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -271,20 +261,6 @@ function rememberUri(uri, label) {
   renderSaved();
 }
 
-function renderTimers() {
-  const box = $("timerChips");
-  box.innerHTML = "";
-  TIMERS.forEach((m) => {
-    const b = document.createElement("button");
-    b.className = "chip";
-    b.textContent = m ? `${m} min` : "Off";
-    b.setAttribute("aria-pressed", String(m === minutes));
-    b.onclick = () => { minutes = m; store.set("minutes", m); renderTimers(); };
-    box.appendChild(b);
-  });
-  $("offAfterRow").classList.toggle("hidden", !minutes);
-}
-
 function renderSwatches() {
   const box = $("swatches");
   box.querySelectorAll(".swatch").forEach((n) => n.remove());
@@ -324,6 +300,7 @@ function fillSelect(sel, items, current, empty) {
 function renderState() {
   const authed = state.spotify_authed;
   $("connect").classList.toggle("hidden", authed);
+  $("logoutForm").classList.toggle("hidden", !state.login_enabled);
   $("nowCard").classList.toggle("hidden", !authed);
 
   const speakers = state.speakers.map((s) => ({ value: s.id, label: s.name + (s.active ? " (active)" : "") }));
@@ -341,18 +318,6 @@ function renderState() {
   const sp = state.speakers.find((s) => s.id === $("speaker").value);
   if (sp && sp.volume != null && !$("volume").matches(":active")) {
     $("volume").value = sp.volume; $("volLabel").textContent = sp.volume + "%";
-  }
-
-  timerEndsAt = state.timer_ends_at;
-  tickTimer();
-}
-
-function tickTimer() {
-  const left = timerEndsAt ? Math.max(0, timerEndsAt * 1000 - Date.now()) : 0;
-  $("timerBox").classList.toggle("hidden", !left);
-  if (left) {
-    const s = Math.round(left / 1000);
-    $("timerLeft").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   }
 }
 
@@ -384,7 +349,6 @@ $("startBtn").onclick = () => busy($("startBtn"), async () => {
     uri, speaker: $("speaker").value || null, hatch: hatchName(),
     volume: Number($("volume").value), shuffle: $("shuffle").checked,
     use_hatch: $("useHatchSwitch").checked, color, brightness: Number($("brightness").value),
-    minutes, hatch_off_after: $("offAfter").checked,
   });
   store.set("uri", uri);
   setTimeout(async () => {
@@ -395,7 +359,7 @@ $("startBtn").onclick = () => busy($("startBtn"), async () => {
 });
 
 $("stopBtn").onclick = () => busy($("stopBtn"), async () => {
-  const r = await api("/api/stop", { hatch: hatchName(), hatch_off: true });
+  const r = await api("/api/stop", {});
   loadState();
   return r;
 });
@@ -412,7 +376,6 @@ $("volume").oninput = () => { $("volLabel").textContent = $("volume").value + "%
 $("volume").onchange = () => api("/api/volume", { volume: Number($("volume").value), speaker: $("speaker").value || null })
   .catch((e) => toast(e.message, true));
 
-$("cancelTimer").onclick = () => busy($("cancelTimer"), async () => { await api("/api/timer/cancel", {}); timerEndsAt = null; tickTimer(); return { message: "Timer cancelled" }; });
 
 $("applyLight").onclick = () => busy($("applyLight"), () => api("/api/light", { hatch: hatchName(), color, brightness: Number($("brightness").value) }));
 $("hatchOff").onclick = () => busy($("hatchOff"), () => api("/api/hatch-off", { hatch: hatchName() }));
@@ -424,7 +387,8 @@ $("customColor").oninput = (e) => setColor(e.target.value);
 $("speaker").onchange = () => { store.set("speaker", $("speaker").value); renderState(); };
 $("hatch").onchange = () => store.set("hatch", $("hatch").value);
 $("uri").oninput = () => { store.set("uri", $("uri").value); renderSaved(); };
-for (const id of ["shuffle", "offAfter", "useHatchSwitch"]) {
+$("connectBtn").onclick = () => { location.href = "/spotify/login"; };
+for (const id of ["shuffle", "useHatchSwitch"]) {
   $(id).checked = store.get(id, $(id).checked);
   $(id).onchange = () => store.set(id, $(id).checked);
 }
@@ -432,7 +396,6 @@ $("refresh").onclick = () => { loadState(); loadHatches(); };
 
 // ---------- boot ----------
 (async function init() {
-  renderTimers();
   await loadState();
   const d = state ? state.defaults : {};
   color = color || d.color || "#ff6a00";
@@ -443,7 +406,6 @@ $("refresh").onclick = () => { loadState(); loadHatches(); };
   renderSwatches();
   renderSaved();
   loadHatches();
-  setInterval(tickTimer, 1000);
   setInterval(() => { if (!document.hidden) loadState(); }, 15000);
 })();
 </script>

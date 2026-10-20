@@ -7,12 +7,12 @@ gets you the same result by:
 
   * starting a Spotify playlist/album/track on a Spotify Connect speaker in
     the nursery (Echo, Sonos, Google Nest, a phone, a laptop, ...), and
-  * switching the Hatch to a nightlight with its own sound muted, so the two
-    don't play over each other.
+  * turning on the Hatch nightlight with no Hatch sound, so the two don't
+    play over each other. Later you can pick a sound in the Hatch app as usual.
 
 Commands:
   devices    List your Hatch devices and Spotify Connect speakers.
-  play       Start Spotify and set the Hatch to nightlight mode.
+  play       Start Spotify and turn on the Hatch nightlight (no Hatch sound).
   stop       Pause Spotify and (optionally) turn the Hatch off.
   play-url   Have the Hatch itself stream a public MP3/WAV URL (not Spotify).
 
@@ -25,10 +25,10 @@ import asyncio
 import os
 import re
 import sys
-import time
 
 DEFAULT_SPOTIFY_SCOPE = "user-read-playback-state user-modify-playback-state"
 MQTT_FLUSH_SECONDS = 2
+NO_SOUND_ID = 19998  # hatch_rest_api.const.NO_SOUND_ID, the Hatch's "no sound" id
 
 
 class ControlError(Exception):
@@ -138,22 +138,6 @@ def start_spotify(sp, uri, device_name, volume, shuffle):
     return device
 
 
-def fade_out_and_pause(sp, device_id, start_volume, seconds=30):
-    steps = 10
-    for i in range(steps, -1, -1):
-        try:
-            sp.volume(int(start_volume * i / steps), device_id=device_id)
-        except Exception:
-            break  # some speakers don't allow remote volume
-        time.sleep(seconds / steps)
-    sp.pause_playback(device_id=device_id)
-    # Restore the volume so tomorrow's playback isn't silent.
-    try:
-        sp.volume(int(start_volume), device_id=device_id)
-    except Exception:
-        pass
-
-
 # --------------------------------------------------------------------------
 # Hatch (via the unofficial hatch_rest_api cloud library)
 # --------------------------------------------------------------------------
@@ -170,6 +154,8 @@ async def with_hatch(action):
             client_session=session,
         )
         try:
+            # Let each device's current state arrive before acting on it.
+            await asyncio.sleep(MQTT_FLUSH_SECONDS)
             result = action(devices)
             # Device commands are published over MQTT asynchronously.
             await asyncio.sleep(MQTT_FLUSH_SECONDS)
@@ -193,19 +179,36 @@ def find_hatch_device(devices, name):
     raise ControlError(f"Hatch device {name!r} not found. Available: {names}")
 
 
+def stop_hatch_sound(device):
+    """Stop a Hatch sound that's playing, without touching its volume or light."""
+    kind = type(device).__name__
+    if kind in ("RestPlus", "RestMini"):
+        from hatch_rest_api import RestMiniAudioTrack, RestPlusAudioTrack
+
+        device.set_audio_track(RestPlusAudioTrack.NONE if kind == "RestPlus" else RestMiniAudioTrack.NONE)
+    else:
+        # Newer models have no "sound off, light on" call (turn_off() turns the
+        # light off too), so switch the sound to the "no sound" id instead.
+        device._update({"current": {"sound": {"id": NO_SOUND_ID, "mute": True}}})
+
+
 def hatch_nightlight(device, rgb, brightness):
-    """Mute the Hatch's built-in sound and turn on its light."""
+    """Turn on the Hatch light and stop any Hatch sound so it doesn't play over Spotify.
+
+    The Hatch volume is left as it is, so a sound picked later in the Hatch app
+    plays normally.
+    """
     kind = type(device).__name__
     if kind == "RestPlus":
-        device.set_on(True)
-    if hasattr(device, "set_volume"):
-        device.set_volume(0)
+        device.set_on(True)  # powering on resumes the last track, so always stop it
+    if kind == "RestPlus" or getattr(device, "is_playing", False):
+        stop_hatch_sound(device)
     if hasattr(device, "set_color"):
         r, g, b = rgb
         device.set_color(r, g, b, brightness=brightness)
-        print(f"Hatch '{device.device_name}': sound muted, light #{r:02x}{g:02x}{b:02x} at {brightness}%")
+        print(f"Hatch '{device.device_name}': light #{r:02x}{g:02x}{b:02x} at {brightness}%, no Hatch sound")
     else:
-        print(f"Hatch '{device.device_name}' ({kind}) has no light; sound muted only")
+        print(f"Hatch '{device.device_name}' ({kind}) has no light; Hatch sound stopped")
 
 
 def hatch_off(device):
@@ -248,20 +251,12 @@ def cmd_devices(args):
 
 def cmd_play(args):
     sp = spotify_client()
-    device = start_spotify(sp, args.uri, args.speaker, args.volume, args.shuffle)
+    start_spotify(sp, args.uri, args.speaker, args.volume, args.shuffle)
 
     if not args.no_hatch:
         asyncio.run(with_hatch(
             lambda ds: hatch_nightlight(find_hatch_device(ds, args.hatch), args.color, args.brightness)
         ))
-
-    if args.minutes:
-        print(f"Sleep timer: fading out in {args.minutes} minutes (Ctrl+C to cancel)")
-        time.sleep(args.minutes * 60)
-        fade_out_and_pause(sp, device["id"], args.volume or device.get("volume_percent") or 50)
-        print("Spotify paused")
-        if args.hatch_off_after:
-            asyncio.run(with_hatch(lambda ds: hatch_off(find_hatch_device(ds, args.hatch))))
 
 
 def cmd_stop(args):
@@ -301,8 +296,6 @@ def build_parser():
     p.add_argument("--brightness", type=int, default=int(env("HATCH_BRIGHTNESS", "20")),
                    help="nightlight brightness 0-100")
     p.add_argument("--no-hatch", action="store_true", help="only start Spotify")
-    p.add_argument("--minutes", type=float, help="sleep timer: fade out and pause after N minutes")
-    p.add_argument("--hatch-off-after", action="store_true", help="with --minutes, also turn the Hatch off")
     p.set_defaults(func=cmd_play)
 
     p = sub.add_parser("stop", help="pause Spotify")

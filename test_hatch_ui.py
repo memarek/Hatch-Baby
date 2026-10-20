@@ -1,0 +1,137 @@
+import http.client
+import json
+import os
+import tempfile
+import threading
+import time
+import unittest
+from http.server import ThreadingHTTPServer
+from unittest import mock
+
+import hatch_spotify as hs
+import hatch_ui
+
+PASSWORD = "correct horse battery"
+
+
+class FakeAuth:
+    def __init__(self):
+        self.cache_handler = mock.Mock(get_cached_token=lambda: None)
+        self.exchanged = []
+
+    def validate_token(self, token): return token
+    def get_authorize_url(self, state=None): return f"https://accounts.spotify.com/authorize?state={state}"
+    def get_access_token(self, code, as_dict=True, check_cache=True): self.exchanged.append(code)
+
+
+class GuardTests(unittest.TestCase):
+    def setUp(self):
+        self.guard = hatch_ui.Guard(PASSWORD, b"k" * 32)
+
+    def test_session_round_trip(self):
+        self.assertTrue(self.guard.valid_session(self.guard.make_session()))
+
+    def test_rejects_tampered_or_expired(self):
+        expires, _, sig = self.guard.make_session().partition(".")
+        self.assertFalse(self.guard.valid_session(f"{int(expires) + 1}.{sig}"))
+        old = str(int(time.time()) - 10)
+        self.assertFalse(self.guard.valid_session(f"{old}.{self.guard._sign(old)}"))
+        self.assertFalse(self.guard.valid_session(None))
+
+    def test_password_change_signs_out(self):
+        session = self.guard.make_session()
+        self.assertFalse(hatch_ui.Guard("another long password", b"k" * 32).valid_session(session))
+
+    def test_lockout(self):
+        for _ in range(hatch_ui.MAX_FAILED_LOGINS):
+            self.assertFalse(self.guard.check_password("nope"))
+        self.assertIsNone(self.guard.check_password(PASSWORD))
+
+    def test_disabled_allows_everything(self):
+        self.assertTrue(hatch_ui.Guard("", b"k").valid_session(None))
+
+    def test_secret_file_is_private(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "secret")
+            first = hatch_ui.load_secret(path)
+            self.assertEqual(first, hatch_ui.load_secret(path))
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+
+class ServerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with mock.patch.object(hs, "spotify_auth", FakeAuth):
+            cls.app = hatch_ui.App()
+        cls.app.pause = mock.Mock(return_value={"ok": True})
+        guard = hatch_ui.Guard(PASSWORD, b"k" * 32)
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), hatch_ui.make_handler(cls.app, guard))
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.session = guard.make_session()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def request(self, method, path, body=None, headers=None, logged_in=True):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        headers = dict(headers or {})
+        if logged_in:
+            headers["Cookie"] = f"{hatch_ui.SESSION_COOKIE}={self.session}"
+        conn.request(method, path, body=body, headers=headers)
+        res = conn.getresponse()
+        res.body = res.read()
+        conn.close()
+        return res
+
+    def test_requires_login(self):
+        self.assertEqual(self.request("GET", "/", logged_in=False).getheader("Location"), "/login")
+        self.assertEqual(self.request("GET", "/api/state", logged_in=False).status, 401)
+        self.assertEqual(self.request("GET", "/login", logged_in=False).status, 200)
+
+    def test_login(self):
+        form = {"Content-Type": "application/x-www-form-urlencoded"}
+        res = self.request("POST", "/login", "password=correct+horse+battery", form, logged_in=False)
+        self.assertEqual(res.getheader("Location"), "/")
+        cookie = res.getheader("Set-Cookie")
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Lax", cookie)
+
+    def test_security_headers(self):
+        res = self.request("GET", "/")
+        self.assertEqual(res.status, 200)
+        self.assertIn("frame-ancestors 'none'", res.getheader("Content-Security-Policy"))
+        self.assertEqual(res.getheader("X-Content-Type-Options"), "nosniff")
+
+    def test_blocks_cross_site_post(self):
+        res = self.request("POST", "/api/stop", "{}", {"Content-Type": "application/json", "Origin": "https://evil.example"})
+        self.assertEqual(res.status, 403)
+        res = self.request("POST", "/api/stop", "{}", {"Content-Type": "text/plain"})
+        self.assertEqual(res.status, 415)
+        res = self.request("POST", "/api/stop", "{}", {"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.port}"})
+        self.assertEqual(res.status, 200)
+
+    def test_rejects_large_body(self):
+        res = self.request("POST", "/api/stop", "x" * (hatch_ui.MAX_BODY_BYTES + 1), {"Content-Type": "application/json"})
+        self.assertEqual(res.status, 400)
+
+    def test_spotify_login_checks_state(self):
+        location = self.request("GET", "/spotify/login").getheader("Location")
+        state = location.split("state=")[1]
+        self.assertEqual(self.request("GET", "/callback?code=abc&state=forged").status, 400)
+        res = self.request("GET", f"/callback?code=abc&state={state}")
+        self.assertEqual(res.getheader("Location"), "/")
+        self.assertEqual(self.app.auth.exchanged, ["abc"])
+        # each state works only once
+        self.assertEqual(self.request("GET", f"/callback?code=abc&state={state}").status, 400)
+
+    def test_errors_hide_internals(self):
+        with mock.patch.object(self.app, "volume", side_effect=RuntimeError("secret detail")):
+            res = self.request("POST", "/api/volume", json.dumps({"volume": 5}), {"Content-Type": "application/json"})
+        self.assertEqual(res.status, 500)
+        self.assertNotIn(b"secret detail", res.body)
+
+
+if __name__ == "__main__":
+    unittest.main()

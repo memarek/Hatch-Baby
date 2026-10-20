@@ -1,3 +1,5 @@
-spotipy>=2.24
-hatch_rest_api>=1.34
-aiohttp>=3.9
+# Exact versions so a server rebuild can't pull in an unexpected release.
+# Bump deliberately: update, run the tests, then deploy.
+spotipy==2.26.0
+hatch_rest_api==1.34.6
+aiohttp==3.14.5
