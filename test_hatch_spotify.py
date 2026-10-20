@@ -50,6 +50,21 @@ class ParsingTests(unittest.TestCase):
             hs.parse_hex_color("orange")
 
 
+class DotenvTests(unittest.TestCase):
+    def test_quotes_only_stripped_in_pairs(self):
+        import os, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+            f.write("# comment\nT_QUOTED=\"a b\"\nT_TRAILING=pa$$word'\nT_EQ=x=y\n")
+        try:
+            with mock.patch.dict(os.environ, {}, clear=False):
+                hs.load_dotenv(f.name)
+                self.assertEqual(os.environ["T_QUOTED"], "a b")
+                self.assertEqual(os.environ["T_TRAILING"], "pa$$word'")
+                self.assertEqual(os.environ["T_EQ"], "x=y")
+        finally:
+            os.unlink(f.name)
+
+
 class SpotifyDeviceTests(unittest.TestCase):
     devices = [
         {"id": "1", "name": "Kitchen Sonos", "is_active": True},

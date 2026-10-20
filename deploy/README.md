@@ -54,44 +54,43 @@ are no cloud costs, and the steps below are the same.
 
 ## 2. Install
 
-On the machine:
+On the machine (in Cloud Shell after `gcloud compute ssh`, or a terminal on
+your Pi or computer):
 
 ```bash
 sudo apt-get install -y git
-git clone https://github.com/memarek/Hatch-Baby.git
-cd Hatch-Baby
-sudo ./deploy/setup.sh
+git clone -b claude/spotify-hatch-baby-playback-az1d3l https://github.com/memarek/Hatch-Baby.git
+cd Hatch-Baby && sudo ./deploy/setup.sh
 ```
 
-If the repository is private, `git clone` asks you to sign in. Use your GitHub
-username and a [personal access token](https://github.com/settings/tokens) as
-the password.
+The script walks you through everything:
+1. **Tailscale:** it prints a login link. Use the same account you'll use on
+   your phone. If it says HTTPS or Serve isn't enabled for your tailnet, open
+   the link it gives, enable it, and run the script again.
+2. **Hatch:** it asks for your Hatch app email and password, and checks them.
+3. **Spotify:** it shows the exact redirect URI to use, walks you through
+   creating a Spotify developer app, then asks for its Client ID and secret
+   and checks them.
+4. **Done:** it prints your private address (like
+   `https://bedtime.tail1234.ts.net`) and your **Bedtime password**. Save the
+   password in your password manager; it's shown only once.
 
-The script:
-- installs the app and automatic security updates
-- installs Tailscale and prints a login link (use the same account you'll use on your phone)
-- generates your Bedtime password and prints it once, so save it
-- prints your private address, for example `https://bedtime.tail1234.ts.net`
+Passwords are hidden as you type and saved where only the app can read them.
 
-If it says HTTPS or Serve isn't enabled for your tailnet, open the link it
-gives, enable it, and run the script again.
-
-## 3. Fill in your settings
-
-```bash
-sudo nano /var/lib/bedtime/.env      # Hatch email/password, Spotify client ID/secret
-sudo systemctl restart bedtime
-```
-
-In your Spotify developer app, add the redirect URI the script printed,
-for example `https://bedtime.tail1234.ts.net/callback`.
-
-## 4. Use it
+## 3. Use it
 
 1. Install Tailscale on your phone and log in with the same account.
 2. Open the address, log in with your Bedtime password, and tap
    **Connect Spotify** (just once).
 3. Tap Share → **Add to Home Screen** for an app icon.
+
+## 4. Changing settings later
+
+```bash
+cd Hatch-Baby
+sudo ./deploy/setup.sh --reconfigure    # re-enter Hatch/Spotify details
+sudo ./deploy/setup.sh --new-password   # forgot the Bedtime password
+```
 
 ## 5. Lock down the cloud firewall (Google Cloud only)
 

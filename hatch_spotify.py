@@ -45,7 +45,10 @@ def load_dotenv(path=".env"):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            os.environ.setdefault(key.strip(), value)
 
 
 def require_env(name):
@@ -249,6 +252,35 @@ def cmd_devices(args):
         print(f"  - {d['name']} ({d['type']}){active}")
 
 
+def cmd_check_hatch(args):
+    def show(devices):
+        names = ", ".join(f"{d.device_name} ({type(d).__name__})" for d in devices)
+        print(f"Hatch login works. Found: {names}")
+
+    try:
+        asyncio.run(with_hatch(show))
+    except ControlError:
+        raise
+    except Exception as e:
+        raise ControlError(f"Hatch login failed: {e}")
+
+
+def cmd_check_spotify(args):
+    from spotipy.cache_handler import MemoryCacheHandler
+    from spotipy.oauth2 import SpotifyClientCredentials
+
+    creds = SpotifyClientCredentials(
+        client_id=require_env("SPOTIFY_CLIENT_ID"),
+        client_secret=require_env("SPOTIFY_CLIENT_SECRET"),
+        cache_handler=MemoryCacheHandler(),
+    )
+    try:
+        creds.get_access_token(as_dict=False, check_cache=False)
+    except Exception as e:
+        raise ControlError(f"Couldn't verify the Spotify client ID/secret: {e}")
+    print("Spotify app ID and secret work.")
+
+
 def cmd_play(args):
     sp = spotify_client()
     start_spotify(sp, args.uri, args.speaker, args.volume, args.shuffle)
@@ -283,6 +315,12 @@ def build_parser():
 
     p = sub.add_parser("devices", help="list Hatch devices and Spotify speakers")
     p.set_defaults(func=cmd_devices)
+
+    p = sub.add_parser("check-hatch", help="test the Hatch login in .env")
+    p.set_defaults(func=cmd_check_hatch)
+
+    p = sub.add_parser("check-spotify", help="test the Spotify app ID/secret in .env")
+    p.set_defaults(func=cmd_check_spotify)
 
     p = sub.add_parser("play", help="play Spotify and put the Hatch in nightlight mode")
     p.add_argument("uri", nargs="?", type=to_spotify_uri, default=env("SPOTIFY_DEFAULT_URI"),
