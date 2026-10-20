@@ -35,7 +35,35 @@ cp .env.example .env   # then fill it in
    [`hatch_rest_api`](https://github.com/dahlb/ha_hatch) library, the same
    one the Home Assistant Hatch integration uses.
 
-## Usage
+## Web UI (easiest)
+
+```bash
+python hatch_ui.py
+```
+
+<img src="docs/ui.png" width="300" align="right" alt="Bedtime UI">
+
+1. **First time only:** on the computer running it, open
+   <http://127.0.0.1:8888> and tap **Connect Spotify**. (Spotify only allows
+   this login from the computer itself.)
+2. After that, open `http://<computer's-IP>:8888` on your phone. Use
+   *Add to Home Screen* to get an app icon.
+
+From the page you can:
+- paste a playlist link (recent ones are saved as one-tap buttons)
+- pick the nursery speaker
+- set a sleep timer that fades out (and can turn the Hatch off)
+- pick a nightlight color and brightness
+- control playback and volume
+- stop everything with one button
+
+The page is dark so it won't light up the room. The server listens on your
+home network with no password, so anyone on your Wi-Fi can use it. Run
+`python hatch_ui.py --host 127.0.0.1` to limit it to this computer only.
+
+<br clear="right">
+
+## Command line usage
 
 ```bash
 # See what's available

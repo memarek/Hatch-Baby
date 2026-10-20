@@ -31,6 +31,10 @@ DEFAULT_SPOTIFY_SCOPE = "user-read-playback-state user-modify-playback-state"
 MQTT_FLUSH_SECONDS = 2
 
 
+class ControlError(Exception):
+    """A problem worth showing to the user (bad config, device not found, ...)."""
+
+
 def load_dotenv(path=".env"):
     """Minimal .env loader so python-dotenv isn't required."""
     if not os.path.exists(path):
@@ -47,7 +51,7 @@ def load_dotenv(path=".env"):
 def require_env(name):
     value = os.environ.get(name)
     if not value:
-        sys.exit(f"Missing required setting {name} (see .env.example)")
+        raise ControlError(f"Missing required setting {name} (see .env.example)")
     return value
 
 
@@ -73,11 +77,10 @@ def to_spotify_uri(value):
 # Spotify
 # --------------------------------------------------------------------------
 
-def spotify_client():
-    import spotipy
+def spotify_auth():
     from spotipy.oauth2 import SpotifyOAuth
 
-    auth = SpotifyOAuth(
+    return SpotifyOAuth(
         client_id=require_env("SPOTIFY_CLIENT_ID"),
         client_secret=require_env("SPOTIFY_CLIENT_SECRET"),
         redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback"),
@@ -85,12 +88,20 @@ def spotify_client():
         cache_path=os.environ.get("SPOTIFY_TOKEN_CACHE", ".spotify_token_cache"),
         open_browser=False,
     )
-    return spotipy.Spotify(auth_manager=auth)
+
+
+def spotify_client(auth=None):
+    import spotipy
+
+    return spotipy.Spotify(auth_manager=auth or spotify_auth())
 
 
 def find_spotify_device(devices, name):
-    """Pick a device by (case-insensitive, partial) name, or the active one."""
+    """Pick a device by id or (case-insensitive, partial) name, or the active one."""
     if name:
+        for device in devices:
+            if device["id"] == name:
+                return device
         wanted = name.lower()
         for device in devices:
             if device["name"].lower() == wanted:
@@ -110,8 +121,8 @@ def start_spotify(sp, uri, device_name, volume, shuffle):
     device = find_spotify_device(devices, device_name)
     if device is None:
         names = ", ".join(d["name"] for d in devices) or "none online"
-        sys.exit(f"Spotify speaker {device_name!r} not found. Available: {names}. "
-                 "Open Spotify on that speaker once so it shows up.")
+        raise ControlError(f"Spotify speaker {device_name!r} not found. Available: {names}. "
+                           "Open Spotify on that speaker once so it shows up.")
 
     kwargs = {"device_id": device["id"]}
     if uri.startswith("spotify:track:") or uri.startswith("spotify:episode:"):
@@ -136,6 +147,11 @@ def fade_out_and_pause(sp, device_id, start_volume, seconds=30):
             break  # some speakers don't allow remote volume
         time.sleep(seconds / steps)
     sp.pause_playback(device_id=device_id)
+    # Restore the volume so tomorrow's playback isn't silent.
+    try:
+        sp.volume(int(start_volume), device_id=device_id)
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -166,7 +182,7 @@ async def with_hatch(action):
 
 def find_hatch_device(devices, name):
     if not devices:
-        sys.exit("No Hatch devices found on this account.")
+        raise ControlError("No Hatch devices found on this account.")
     if not name:
         return devices[0]
     wanted = name.lower()
@@ -174,7 +190,7 @@ def find_hatch_device(devices, name):
         if wanted in device.device_name.lower():
             return device
     names = ", ".join(d.device_name for d in devices)
-    sys.exit(f"Hatch device {name!r} not found. Available: {names}")
+    raise ControlError(f"Hatch device {name!r} not found. Available: {names}")
 
 
 def hatch_nightlight(device, rgb, brightness):
@@ -206,7 +222,7 @@ def hatch_off(device):
 
 def hatch_play_url(device, url, volume):
     if not hasattr(device, "set_sound_url"):
-        sys.exit(f"{type(device).__name__} can't stream URLs; only Rest 2nd gen / Rest Baby models can.")
+        raise ControlError(f"{type(device).__name__} can't stream URLs; only Rest 2nd gen / Rest Baby models can.")
     device.set_sound_url(url)
     if volume is not None:
         device.set_volume(volume)
@@ -307,7 +323,10 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "play" and not args.uri:
         sys.exit("Give a Spotify URI/link or set SPOTIFY_DEFAULT_URI")
-    args.func(args)
+    try:
+        args.func(args)
+    except ControlError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":

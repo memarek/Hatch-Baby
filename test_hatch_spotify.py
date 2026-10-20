@@ -57,6 +57,9 @@ class SpotifyDeviceTests(unittest.TestCase):
         self.assertEqual(hs.find_spotify_device(self.devices, "nursery echo")["id"], "2")
         self.assertEqual(hs.find_spotify_device(self.devices, "nursery")["id"], "2")
 
+    def test_match_by_id(self):
+        self.assertEqual(hs.find_spotify_device(self.devices, "2")["name"], "Nursery Echo")
+
     def test_defaults_to_active(self):
         self.assertEqual(hs.find_spotify_device(self.devices, None)["id"], "1")
 
@@ -97,7 +100,7 @@ class HatchTests(unittest.TestCase):
         ds = [FakeRestIot("Living Room"), FakeRestIot("Nursery Rest")]
         self.assertIs(hs.find_hatch_device(ds, "nursery"), ds[1])
         self.assertIs(hs.find_hatch_device(ds, None), ds[0])
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(hs.ControlError):
             hs.find_hatch_device(ds, "garage")
 
 

@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1222">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Bedtime</title>
+<style>
+  :root {
+    --bg: #0f1222;
+    --card: #181c33;
+    --card-2: #20253f;
+    --line: #2b3152;
+    --text: #e9e7f2;
+    --muted: #9a9cb8;
+    --accent: #ffb86b;
+    --accent-ink: #2a1a05;
+    --spotify: #1ed760;
+    --danger: #ff7a7a;
+    --radius: 18px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -200px, #232a52 0%, var(--bg) 60%) fixed, var(--bg);
+    color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 16px calc(32px + env(safe-area-inset-bottom));
+  }
+  main { max-width: 520px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 20px 4px 12px; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: -0.02em; }
+  h1 span { color: var(--accent); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 14px; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 14px; }
+  .hidden { display: none !important; }
+  label.field { display: block; margin-bottom: 14px; }
+  label.field > span { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+  label.field > span.between { display: flex; }
+  input[type=text], input[type=url], select {
+    width: 100%; background: var(--card-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px; font-size: 16px; appearance: none; -webkit-appearance: none;
+  }
+  select { background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 20px) 50%, calc(100% - 15px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 36px; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .row > * { flex: 1; }
+  .between { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  button {
+    font: inherit; border: 0; border-radius: 14px; padding: 13px 16px; cursor: pointer;
+    background: var(--card-2); color: var(--text); border: 1px solid var(--line);
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 700; font-size: 17px; width: 100%; padding: 16px; }
+  button.spotify { background: var(--spotify); color: #062b13; border-color: transparent; font-weight: 700; width: 100%; }
+  button.ghost { background: transparent; }
+  button.danger { color: var(--danger); }
+  .muted { color: var(--muted); font-size: 14px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .chip { padding: 7px 12px; border-radius: 999px; font-size: 14px; background: var(--card-2); border: 1px solid var(--line); }
+  .chip[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+  .chip .x { margin-left: 6px; opacity: 0.6; }
+
+  .switch { display: flex; justify-content: space-between; align-items: center; padding: 6px 0 14px; }
+  .switch input { appearance: none; -webkit-appearance: none; width: 50px; height: 30px; border-radius: 999px; background: var(--line); position: relative; cursor: pointer; flex: none; transition: background .2s; }
+  .switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; transition: transform .2s; }
+  .switch input:checked { background: var(--accent); }
+  .switch input:checked::after { transform: translateX(20px); }
+
+  .now { display: flex; gap: 14px; align-items: center; }
+  .art { width: 64px; height: 64px; border-radius: 12px; background: var(--card-2) center/cover; flex: none; display: grid; place-items: center; color: var(--muted); font-size: 26px; }
+  .now .title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .now .meta { min-width: 0; flex: 1; }
+  .controls { display: flex; justify-content: center; gap: 14px; margin: 16px 0 6px; }
+  .controls button { width: 56px; height: 56px; border-radius: 50%; padding: 0; font-size: 20px; }
+  .controls button.big { width: 68px; height: 68px; background: var(--text); color: var(--bg); font-size: 24px; }
+
+  .swatches { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .swatch { width: 40px; height: 40px; border-radius: 50%; border: 2px solid transparent; padding: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,.15); }
+  .swatch[aria-pressed=true] { border-color: var(--text); }
+  .custom-color { position: relative; width: 40px; height: 40px; border-radius: 50%; overflow: hidden; background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red); }
+  .custom-color input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+  .glow { height: 10px; border-radius: 999px; margin: 14px 0 16px; transition: background .2s, box-shadow .2s; }
+
+  .timer { display: flex; align-items: center; justify-content: space-between; background: var(--card-2); border-radius: 14px; padding: 12px 14px; margin-bottom: 14px; }
+  .timer strong { font-variant-numeric: tabular-nums; font-size: 20px; }
+
+  details summary { cursor: pointer; color: var(--muted); list-style: none; }
+  details summary::-webkit-details-marker { display: none; }
+  details[open] summary { margin-bottom: 14px; }
+
+  #toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(20px);
+    background: var(--text); color: var(--bg); padding: 12px 18px; border-radius: 14px; font-weight: 600; opacity: 0; transition: .25s; pointer-events: none; max-width: calc(100% - 32px); text-align: center; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.error { background: var(--danger); color: #2b0000; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -3px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Bed<span>time</span></h1>
+    <button class="ghost" id="refresh" aria-label="Refresh">↻</button>
+  </header>
+
+  <section class="card hidden" id="connect">
+    <h2>Spotify</h2>
+    <p class="muted">Connect your Spotify Premium account once. Do this on the computer running the app.</p>
+    <button class="spotify" onclick="location.href='/login'">Connect Spotify</button>
+  </section>
+
+  <section class="card" id="nowCard">
+    <h2>Now playing</h2>
+    <div class="now">
+      <div class="art" id="art">♪</div>
+      <div class="meta">
+        <div class="title" id="npTitle">Nothing playing</div>
+        <div class="muted" id="npSub">Start bedtime below</div>
+      </div>
+    </div>
+    <div class="controls">
+      <button id="prevBtn" aria-label="Previous">⏮</button>
+      <button class="big" id="playPauseBtn" aria-label="Play or pause">▶</button>
+      <button id="nextBtn" aria-label="Next">⏭</button>
+    </div>
+    <label class="field" style="margin:8px 0 0">
+      <span class="between"><span>Speaker volume</span><span id="volLabel">30%</span></span>
+      <input type="range" id="volume" min="0" max="100" value="30">
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>Start bedtime</h2>
+    <label class="field">
+      <span>Playlist, album or song (Spotify link)</span>
+      <input type="url" id="uri" placeholder="https://open.spotify.com/playlist/…" autocomplete="off">
+      <div class="chips" id="saved"></div>
+    </label>
+    <label class="field">
+      <span>Speaker in the nursery</span>
+      <select id="speaker"><option value="">Loading…</option></select>
+    </label>
+    <div class="switch"><span>Shuffle</span><input type="checkbox" id="shuffle"></div>
+
+    <div class="field">
+      <span class="muted" style="display:block;margin-bottom:6px">Sleep timer</span>
+      <div class="chips" id="timerChips"></div>
+    </div>
+    <div class="switch" id="offAfterRow"><span>Turn Hatch off when timer ends</span><input type="checkbox" id="offAfter"></div>
+
+    <div class="timer hidden" id="timerBox">
+      <span>Fading out in <strong id="timerLeft">--:--</strong></span>
+      <button class="ghost danger" id="cancelTimer">Cancel</button>
+    </div>
+
+    <button class="primary" id="startBtn">🌙 Start bedtime</button>
+    <button class="ghost danger" id="stopBtn" style="width:100%;margin-top:8px">Stop everything</button>
+  </section>
+
+  <section class="card">
+    <h2>Hatch nightlight</h2>
+    <div class="switch"><span>Turn on nightlight with bedtime</span><input type="checkbox" id="useHatchSwitch" checked></div>
+    <label class="field">
+      <span>Hatch</span>
+      <select id="hatch"><option value="">Loading…</option></select>
+    </label>
+    <div class="swatches" id="swatches">
+      <label class="custom-color" title="Custom color"><input type="color" id="customColor" value="#ff6a00"></label>
+    </div>
+    <div class="glow" id="glow"></div>
+    <label class="field">
+      <span class="between"><span>Brightness</span><span id="brightLabel">20%</span></span>
+      <input type="range" id="brightness" min="1" max="100" value="20">
+    </label>
+    <div class="row">
+      <button id="applyLight">Apply light</button>
+      <button id="hatchOff" class="danger">Hatch off</button>
+    </div>
+    <p class="muted" style="margin:12px 0 0">The Hatch's own sound is muted while Spotify plays.</p>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>▸ Play a sound file on the Hatch speaker</summary>
+      <p class="muted" style="margin-top:0">Rest 2nd gen and Rest Baby only. Needs a public MP3 or WAV link. Spotify links won't work here.</p>
+      <label class="field"><span>Audio link</span><input type="url" id="soundUrl" placeholder="https://…/lullaby.mp3"></label>
+      <label class="field">
+        <span class="between"><span>Hatch volume</span><span id="hatchVolLabel">30%</span></span>
+        <input type="range" id="hatchVolume" min="0" max="100" value="30">
+      </label>
+      <button id="streamBtn" style="width:100%">Play on Hatch</button>
+    </details>
+  </section>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PRESETS = [
+  ["#ff2a00", "Red (best for sleep)"], ["#ff6a00", "Warm orange"], ["#ffb000", "Amber"],
+  ["#ff8fb1", "Soft pink"], ["#7a5cff", "Lavender"], ["#2f7bff", "Blue"], ["#2fd38a", "Green"], ["#fff2d6", "Warm white"],
+];
+const TIMERS = [0, 15, 30, 45, 60, 90];
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("bedtime." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("bedtime." + k, JSON.stringify(v)); } catch {} },
+};
+
+let state = null, color = store.get("color", null), minutes = store.get("minutes", 30), timerEndsAt = null;
+
+function toast(msg, isError) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "show" + (isError ? " error" : "");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.className = "", isError ? 5000 : 2500);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function busy(btn, fn) {
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const r = await fn();
+    if (r && r.message) toast(r.message);
+    return r;
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.innerHTML = label; }
+}
+
+// ---------- rendering ----------
+function renderSaved() {
+  const saved = store.get("saved", []);
+  const box = $("saved");
+  box.innerHTML = "";
+  saved.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.setAttribute("aria-pressed", String($("uri").value === s.uri));
+    b.innerHTML = `${escapeHtml(s.label)}<span class="x" aria-label="Remove">✕</span>`;
+    b.onclick = (e) => {
+      if (e.target.classList.contains("x")) { saved.splice(i, 1); store.set("saved", saved); }
+      else { $("uri").value = s.uri; store.set("uri", s.uri); }
+      renderSaved();
+    };
+    box.appendChild(b);
+  });
+}
+
+function rememberUri(uri, label) {
+  const saved = store.get("saved", []).filter((s) => s.uri !== uri);
+  saved.unshift({ uri, label: (label || "Playlist").slice(0, 28) });
+  store.set("saved", saved.slice(0, 6));
+  renderSaved();
+}
+
+function renderTimers() {
+  const box = $("timerChips");
+  box.innerHTML = "";
+  TIMERS.forEach((m) => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.textContent = m ? `${m} min` : "Off";
+    b.setAttribute("aria-pressed", String(m === minutes));
+    b.onclick = () => { minutes = m; store.set("minutes", m); renderTimers(); };
+    box.appendChild(b);
+  });
+  $("offAfterRow").classList.toggle("hidden", !minutes);
+}
+
+function renderSwatches() {
+  const box = $("swatches");
+  box.querySelectorAll(".swatch").forEach((n) => n.remove());
+  PRESETS.forEach(([hex, name]) => {
+    const b = document.createElement("button");
+    b.className = "swatch";
+    b.style.background = hex;
+    b.title = name;
+    b.setAttribute("aria-label", name);
+    b.setAttribute("aria-pressed", String(hex === color));
+    b.onclick = () => setColor(hex);
+    box.insertBefore(b, box.lastElementChild);
+  });
+  renderGlow();
+}
+
+function renderGlow() {
+  const pct = $("brightness").value / 100;
+  $("glow").style.background = color;
+  $("glow").style.opacity = 0.35 + 0.65 * pct;
+  $("glow").style.boxShadow = `0 0 ${10 + 40 * pct}px ${color}`;
+}
+
+function setColor(hex) { color = hex; store.set("color", hex); $("customColor").value = hex; renderSwatches(); }
+
+function fillSelect(sel, items, current, empty) {
+  sel.innerHTML = "";
+  if (!items.length) { sel.innerHTML = `<option value="">${empty}</option>`; return; }
+  items.forEach(({ value, label }) => {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label;
+    sel.appendChild(o);
+  });
+  if (current && items.some((i) => i.value === current)) sel.value = current;
+}
+
+function renderState() {
+  const authed = state.spotify_authed;
+  $("connect").classList.toggle("hidden", authed);
+  $("nowCard").classList.toggle("hidden", !authed);
+
+  const speakers = state.speakers.map((s) => ({ value: s.id, label: s.name + (s.active ? " (active)" : "") }));
+  const wanted = store.get("speaker", null) ||
+    (state.speakers.find((s) => state.defaults.speaker && s.name.toLowerCase().includes(state.defaults.speaker.toLowerCase())) || {}).id;
+  fillSelect($("speaker"), speakers, wanted, authed ? "No speakers online. Open Spotify on one." : "Connect Spotify first");
+
+  const pb = state.playback;
+  $("npTitle").textContent = pb ? pb.title : "Nothing playing";
+  $("npSub").textContent = pb ? `${pb.artist}${pb.device ? " · " + pb.device : ""}` : "Start bedtime below";
+  $("art").style.backgroundImage = pb && pb.image ? `url("${pb.image}")` : "";
+  $("art").textContent = pb && pb.image ? "" : "♪";
+  $("playPauseBtn").textContent = pb && pb.is_playing ? "⏸" : "▶";
+
+  const sp = state.speakers.find((s) => s.id === $("speaker").value);
+  if (sp && sp.volume != null && !$("volume").matches(":active")) {
+    $("volume").value = sp.volume; $("volLabel").textContent = sp.volume + "%";
+  }
+
+  timerEndsAt = state.timer_ends_at;
+  tickTimer();
+}
+
+function tickTimer() {
+  const left = timerEndsAt ? Math.max(0, timerEndsAt * 1000 - Date.now()) : 0;
+  $("timerBox").classList.toggle("hidden", !left);
+  if (left) {
+    const s = Math.round(left / 1000);
+    $("timerLeft").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+}
+
+async function loadState() {
+  try { state = await api("/api/state"); renderState(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function loadHatches() {
+  try {
+    const list = await api("/api/hatches");
+    const items = list.map((h) => ({ value: h.name, label: `${h.name} (${h.model})` }));
+    fillSelect($("hatch"), items, store.get("hatch", null) || (state && state.defaults.hatch), "No Hatch found");
+  } catch (e) {
+    fillSelect($("hatch"), [], null, "Couldn't reach Hatch");
+    toast("Hatch: " + e.message, true);
+  }
+}
+
+function escapeHtml(s) { return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+// ---------- actions ----------
+const hatchName = () => $("hatch").value || null;
+
+$("startBtn").onclick = () => busy($("startBtn"), async () => {
+  const uri = $("uri").value.trim();
+  if (!uri) throw new Error("Paste a Spotify playlist link first");
+  const r = await api("/api/play", {
+    uri, speaker: $("speaker").value || null, hatch: hatchName(),
+    volume: Number($("volume").value), shuffle: $("shuffle").checked,
+    use_hatch: $("useHatchSwitch").checked, color, brightness: Number($("brightness").value),
+    minutes, hatch_off_after: $("offAfter").checked,
+  });
+  store.set("uri", uri);
+  setTimeout(async () => {
+    await loadState();
+    rememberUri(uri, state && state.playback ? state.playback.title : uri.split("/").pop());
+  }, 1200);
+  return r;
+});
+
+$("stopBtn").onclick = () => busy($("stopBtn"), async () => {
+  const r = await api("/api/stop", { hatch: hatchName(), hatch_off: true });
+  loadState();
+  return r;
+});
+
+$("playPauseBtn").onclick = () => busy($("playPauseBtn"), async () => {
+  if (state && state.playback && state.playback.is_playing) await api("/api/stop", {});
+  else await api("/api/resume", { speaker: $("speaker").value || null });
+  setTimeout(loadState, 600);
+});
+$("nextBtn").onclick = () => busy($("nextBtn"), async () => { await api("/api/skip", {}); setTimeout(loadState, 800); });
+$("prevBtn").onclick = () => busy($("prevBtn"), async () => { await api("/api/skip", { back: true }); setTimeout(loadState, 800); });
+
+$("volume").oninput = () => { $("volLabel").textContent = $("volume").value + "%"; };
+$("volume").onchange = () => api("/api/volume", { volume: Number($("volume").value), speaker: $("speaker").value || null })
+  .catch((e) => toast(e.message, true));
+
+$("cancelTimer").onclick = () => busy($("cancelTimer"), async () => { await api("/api/timer/cancel", {}); timerEndsAt = null; tickTimer(); return { message: "Timer cancelled" }; });
+
+$("applyLight").onclick = () => busy($("applyLight"), () => api("/api/light", { hatch: hatchName(), color, brightness: Number($("brightness").value) }));
+$("hatchOff").onclick = () => busy($("hatchOff"), () => api("/api/hatch-off", { hatch: hatchName() }));
+$("streamBtn").onclick = () => busy($("streamBtn"), () => api("/api/hatch-url", { hatch: hatchName(), url: $("soundUrl").value, volume: Number($("hatchVolume").value) }));
+
+$("brightness").oninput = () => { $("brightLabel").textContent = $("brightness").value + "%"; store.set("brightness", Number($("brightness").value)); renderGlow(); };
+$("hatchVolume").oninput = () => { $("hatchVolLabel").textContent = $("hatchVolume").value + "%"; };
+$("customColor").oninput = (e) => setColor(e.target.value);
+$("speaker").onchange = () => { store.set("speaker", $("speaker").value); renderState(); };
+$("hatch").onchange = () => store.set("hatch", $("hatch").value);
+$("uri").oninput = () => { store.set("uri", $("uri").value); renderSaved(); };
+for (const id of ["shuffle", "offAfter", "useHatchSwitch"]) {
+  $(id).checked = store.get(id, $(id).checked);
+  $(id).onchange = () => store.set(id, $(id).checked);
+}
+$("refresh").onclick = () => { loadState(); loadHatches(); };
+
+// ---------- boot ----------
+(async function init() {
+  renderTimers();
+  await loadState();
+  const d = state ? state.defaults : {};
+  color = color || d.color || "#ff6a00";
+  $("customColor").value = color;
+  $("brightness").value = store.get("brightness", d.brightness || 20);
+  $("brightLabel").textContent = $("brightness").value + "%";
+  $("uri").value = store.get("uri", d.uri || "");
+  renderSwatches();
+  renderSaved();
+  loadHatches();
+  setInterval(tickTimer, 1000);
+  setInterval(() => { if (!document.hidden) loadState(); }, 15000);
+})();
+</script>
+</body>
+</html>
