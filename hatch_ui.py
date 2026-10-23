@@ -155,14 +155,16 @@ class App:
         # the page polls this to show progress.
         self.hatch_job = {"busy": False, "ok": None, "message": "", "at": 0}
 
-    def run_hatch_job(self, action, done_message):
-        self.hatch_job = {"busy": True, "ok": None, "message": "Talking to the Hatch…", "at": time.time()}
+    def run_hatch_job(self, action, done_message, working_message="Talking to the Hatch…"):
+        """done_message may be a function of the action's result."""
+        self.hatch_job = {"busy": True, "ok": None, "message": working_message, "at": time.time()}
 
         def work():
             try:
-                run_hatch(action)
+                result = run_hatch(action)
                 self.status_cache.clear()  # what's playing just changed
-                self.hatch_job = {"busy": False, "ok": True, "message": done_message, "at": time.time()}
+                message = done_message(result) if callable(done_message) else done_message
+                self.hatch_job = {"busy": False, "ok": True, "message": message, "at": time.time()}
             except Exception as e:
                 if not isinstance(e, hs.ControlError):
                     traceback.print_exc()
@@ -265,7 +267,8 @@ class App:
         if devices is None or query.get("refresh") or time.time() - fetched_at > HATCH_CACHE_SECONDS:
             devices = run_hatch(lambda ds: [
                 {"name": d.device_name, "model": MODEL_NAMES.get(type(d).__name__, type(d).__name__),
-                 "has_light": hasattr(d, "set_color"), "can_stream_url": hasattr(d, "set_sound_url")}
+                 "has_light": hasattr(d, "set_color"), "can_stream_url": hasattr(d, "set_sound_url"),
+                 "sounds": hs.hatch_sounds(d)}
                 for d in ds
             ])
             self.hatch_cache = (time.time(), devices)
@@ -307,7 +310,7 @@ class App:
             brightness = int(body.get("brightness", defaults()["brightness"]))
             self.run_hatch_job(
                 lambda ds: hs.hatch_nightlight(hs.find_hatch_device(ds, body.get("hatch")), rgb, brightness),
-                "Nightlight on")
+                "Nightlight on", "Turning on the nightlight…")
         return {"ok": True, "message": f"Playing on {device['name']}"}
 
     def pause(self, _):
@@ -336,11 +339,30 @@ class App:
         brightness = int(body["brightness"])
         self.run_hatch_job(
             lambda ds: hs.hatch_nightlight(hs.find_hatch_device(ds, body.get("hatch")), rgb, brightness),
-            "Nightlight updated")
+            "Nightlight updated", "Changing the nightlight…")
         return {"ok": True}
 
     def hatch_off(self, body):
-        self.run_hatch_job(lambda ds: hs.hatch_off(hs.find_hatch_device(ds, body.get("hatch"))), "Hatch off")
+        self.run_hatch_job(lambda ds: hs.hatch_off(hs.find_hatch_device(ds, body.get("hatch"))),
+                           "Hatch off", "Turning the Hatch off…")
+        return {"ok": True}
+
+    def hatch_volume(self, body):
+        volume = int(body["volume"])
+        if not 0 <= volume <= 100:
+            raise hs.ControlError("Volume must be between 0 and 100.")
+        self.run_hatch_job(lambda ds: hs.hatch_set_volume(hs.find_hatch_device(ds, body.get("hatch")), volume),
+                           f"Hatch volume {volume}%", "Changing the Hatch volume…")
+        return {"ok": True}
+
+    def hatch_sound(self, body):
+        sound = body.get("sound")
+        if sound in (None, ""):
+            self.run_hatch_job(lambda ds: hs.hatch_stop_sound(hs.find_hatch_device(ds, body.get("hatch"))),
+                               "Hatch sound stopped", "Stopping the Hatch sound…")
+        else:
+            self.run_hatch_job(lambda ds: hs.hatch_play_sound(hs.find_hatch_device(ds, body.get("hatch")), sound),
+                               lambda title: f"Playing {title} on the Hatch", "Starting the Hatch sound…")
         return {"ok": True}
 
     def hatch_url(self, body):
@@ -365,6 +387,8 @@ ROUTES = {
     ("POST", "/api/light"): "light",
     ("POST", "/api/hatch-off"): "hatch_off",
     ("POST", "/api/hatch-url"): "hatch_url",
+    ("POST", "/api/hatch-volume"): "hatch_volume",
+    ("POST", "/api/hatch-sound"): "hatch_sound",
     ("POST", "/api/favorites"): "add_favorite",
     ("POST", "/api/favorites/remove"): "remove_favorite",
 }

@@ -215,6 +215,74 @@ def hatch_nightlight(device, rgb, brightness):
         print(f"Hatch '{device.device_name}' ({kind}) has no light; Hatch sound stopped")
 
 
+def spaced(name):
+    """Enum names like PinkNoise -> "Pink Noise"."""
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
+
+
+def _track_enum(device):
+    """The audio track enum for older models (Rest+, Rest Mini), else None."""
+    kind = type(device).__name__
+    if kind not in ("RestPlus", "RestMini"):
+        return None
+    from hatch_rest_api import RestMiniAudioTrack, RestPlusAudioTrack
+
+    return RestPlusAudioTrack if kind == "RestPlus" else RestMiniAudioTrack
+
+
+def hatch_sounds(device):
+    """Sounds this Hatch can play from here, as [{"id", "title"}]."""
+    tracks = _track_enum(device)
+    if tracks is not None:
+        return [{"id": t.name, "title": spaced(t.name)} for t in tracks if t.name not in ("NONE", "Stream")]
+    if not hasattr(device, "set_sound"):
+        return []
+    sounds = [s for s in (getattr(device, "sounds", None) or [])
+              if s.get("id") and s.get("title") and not s.get("hidden") and (s.get("wavUrl") or s.get("mp3Url"))]
+    sounds.sort(key=lambda s: (s.get("displayOrder") is None, s.get("displayOrder") or 0, s["title"]))
+    return [{"id": s["id"], "title": s["title"]} for s in sounds]
+
+
+def hatch_play_sound(device, sound_id):
+    """Play one of hatch_sounds() on the Hatch. Returns its title."""
+    tracks = _track_enum(device)
+    if tracks is not None:
+        try:
+            track = tracks[str(sound_id)]
+        except KeyError:
+            raise ControlError("That sound isn't available on this Hatch.")
+        if type(device).__name__ == "RestPlus" and not getattr(device, "is_on", True):
+            device.set_on(True)
+        device.set_audio_track(track)
+        return spaced(track.name)
+    if not hasattr(device, "set_sound"):
+        raise ControlError("This Hatch can't change sounds from here. Use the Hatch app.")
+    available = {s["id"]: s["title"] for s in hatch_sounds(device)}
+    try:
+        sound_id = int(sound_id)
+    except (TypeError, ValueError):
+        sound_id = None
+    if sound_id not in available:
+        raise ControlError("That sound isn't available on this Hatch.")
+    device.set_sound(sound_id)
+    return available[sound_id]
+
+
+def hatch_stop_sound(device):
+    """Stop the Hatch's sound. Leaves the light alone."""
+    if hasattr(device, "turn_off") and not getattr(device, "is_light_on", False):
+        device.turn_off()  # nothing else is on, so this is the plain "off"
+    else:
+        stop_hatch_sound(device)
+
+
+def hatch_set_volume(device, percentage):
+    percentage = int(percentage)
+    if not 0 <= percentage <= 100:
+        raise ControlError("Volume must be between 0 and 100.")
+    device.set_volume(percentage)
+
+
 def wait_for_hatch_state(device, seconds=4):
     """Give the device's current state a moment to arrive from Hatch's cloud."""
     deadline = time.time() + seconds
@@ -237,8 +305,7 @@ def hatch_snapshot(device):
             info = (getattr(device, "sounds_by_id", None) or {}).get(getattr(device, "sound_id", None)) or {}
             sound = info.get("title")
     if playing and not sound:
-        # Enum names like PinkNoise -> "Pink Noise"
-        sound = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", track.name) if track is not None else "A Hatch sound"
+        sound = spaced(track.name) if track is not None else "A Hatch sound"
 
     has_light = hasattr(device, "set_color")
     if kind == "RestPlus":

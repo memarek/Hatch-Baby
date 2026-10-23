@@ -182,6 +182,61 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, 1)
 
 
+class HatchControlTests(unittest.TestCase):
+    def rest_iot(self):
+        d = FakeRestIot()
+        d.is_light_on = False
+        d.sounds = [
+            {"id": 3, "title": "White Noise", "displayOrder": 2, "wavUrl": "u3"},
+            {"id": 1, "title": "Dryer", "displayOrder": 1, "wavUrl": "u1"},
+            {"id": 9, "title": "Hidden", "displayOrder": 0, "wavUrl": "u9", "hidden": True},
+            {"id": 8, "title": "No audio", "displayOrder": 0},
+        ]
+        d.set_sound = lambda sid: d.calls.append(("sound", sid))
+        return d
+
+    def test_sound_list_for_newer_models(self):
+        self.assertEqual(hs.hatch_sounds(self.rest_iot()),
+                         [{"id": 1, "title": "Dryer"}, {"id": 3, "title": "White Noise"}])
+
+    def test_sound_list_for_rest_plus(self):
+        titles = [s["title"] for s in hs.hatch_sounds(RestPlus())]
+        self.assertIn("Pink Noise", titles)
+        self.assertNotIn("NONE", titles)
+        self.assertNotIn("Stream", titles)
+
+    def test_play_sound(self):
+        d = self.rest_iot()
+        self.assertEqual(hs.hatch_play_sound(d, "1"), "Dryer")
+        self.assertEqual(d.calls, [("sound", 1)])
+        with self.assertRaises(hs.ControlError):
+            hs.hatch_play_sound(d, 9)  # hidden
+        with self.assertRaises(hs.ControlError):
+            hs.hatch_play_sound(d, "nope")
+
+    def test_play_sound_rest_plus_powers_on(self):
+        d = RestPlus()
+        d.is_on = False
+        self.assertEqual(hs.hatch_play_sound(d, "PinkNoise"), "Pink Noise")
+        self.assertEqual(d.calls, [("on", True), ("track", "PinkNoise")])
+
+    def test_stop_sound_keeps_light(self):
+        d = self.rest_iot()
+        hs.hatch_stop_sound(d)  # light off: plain off
+        self.assertEqual(d.calls, [("off",)])
+        d = self.rest_iot()
+        d.is_light_on = True
+        hs.hatch_stop_sound(d)  # light on: only the sound
+        self.assertEqual(d.calls, [("update", {"current": {"sound": {"id": hs.NO_SOUND_ID, "mute": True}}})])
+
+    def test_volume(self):
+        d = self.rest_iot()
+        hs.hatch_set_volume(d, "35")
+        self.assertEqual(d.calls, [("volume", 35)])
+        with self.assertRaises(hs.ControlError):
+            hs.hatch_set_volume(d, 101)
+
+
 class CliTests(unittest.TestCase):
     def test_play_args(self):
         args = hs.build_parser().parse_args(

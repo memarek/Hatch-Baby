@@ -92,7 +92,18 @@
   .controls input { flex: 1; }
 
   /* Hatch now */
-  .hatchnow { margin-top: 12px; padding: 14px; display: flex; align-items: center; gap: 14px; }
+  .hatchnow { margin-top: 12px; padding: 14px; }
+  .hn-top { display: flex; align-items: center; gap: 14px; }
+  .hn-controls { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .hn-controls .bright { margin-bottom: 10px; }
+  .chip-btn {
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 12px 8px; border-radius: 14px; background: var(--surface-2); font-weight: 600; font-size: 15px;
+    white-space: nowrap; min-width: 0;
+  }
+  .chip-btn svg { width: 18px; height: 18px; }
+  .chip-btn.danger { color: var(--danger); background: rgba(255, 138, 138, .1); }
+  .chip-btn:disabled, .hn-controls input:disabled { opacity: .45; }
   .hn-glow {
     width: 52px; height: 52px; border-radius: 50%; flex: none; display: grid; place-items: center;
     background: var(--surface-2); color: var(--muted); transition: background .3s, box-shadow .3s;
@@ -289,13 +300,26 @@
   </section>
 
   <section class="card hatchnow hidden" id="hatchNow">
-    <div class="hn-glow" id="hnGlow"></div>
-    <div class="meta">
-      <small id="hnLabel">On the Hatch</small>
-      <div class="title" id="hnTitle"></div>
-      <div class="sub" id="hnSub"></div>
+    <div class="hn-top">
+      <div class="hn-glow" id="hnGlow"></div>
+      <div class="meta">
+        <small id="hnLabel">On the Hatch</small>
+        <div class="title" id="hnTitle"></div>
+        <div class="sub" id="hnSub"></div>
+      </div>
+      <button class="icon-btn" id="hnRefresh" aria-label="Check the Hatch again"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
     </div>
-    <button class="icon-btn" id="hnRefresh" aria-label="Check the Hatch again"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
+    <div class="hn-controls hidden" id="hnControls">
+      <label class="bright">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+        <input type="range" id="hatchVol" min="0" max="100" value="40" aria-label="Hatch volume">
+        <span id="hatchVolLabel">40%</span>
+      </label>
+      <div class="two">
+        <button class="chip-btn" id="hnSound"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>Change sound</span></button>
+        <button class="chip-btn danger" id="hnStop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span>Stop sound</span></button>
+      </div>
+    </div>
   </section>
 
   <div class="section-head">
@@ -363,6 +387,15 @@
     <p class="hint">Not listed? Play something on it from the Spotify app once.</p>
     <div id="speakerList"></div>
     <button class="btn quiet" id="speakerRefresh">Refresh</button>
+  </div>
+</dialog>
+
+<dialog class="sheet" id="soundSheet">
+  <div class="sheet-body">
+    <div class="grabber"></div>
+    <h3>Hatch sound</h3>
+    <p class="hint">Plays on the Hatch's own speaker.</p>
+    <div id="soundList"></div>
   </div>
 </dialog>
 
@@ -639,6 +672,7 @@ function renderHatchNow() {
   glow.className = "hn-glow";
   glow.style.background = glow.style.boxShadow = "";
   const h = hatchNow;
+  renderHatchControls();
   if (h.loading) {
     glow.innerHTML = '<span class="spinner"></span>';
     $("hnLabel").textContent = "On the Hatch";
@@ -669,8 +703,8 @@ function renderHatchNow() {
   $("hnSub").textContent = parts.join(" · ");
 }
 
-async function loadHatchNow(refresh) {
-  if (refresh || !hatchNow.name) { hatchNow = { loading: true }; renderHatchNow(); }
+async function loadHatchNow(refresh, quiet) {
+  if ((refresh && !quiet) || !hatchNow.name) { hatchNow = { loading: true }; renderHatchNow(); }
   try {
     const q = new URLSearchParams();
     if (hatchLabel()) q.set("hatch", hatchLabel());
@@ -681,6 +715,55 @@ async function loadHatchNow(refresh) {
   }
   renderHatchNow();
 }
+
+function currentHatch() {
+  return hatches.find((x) => x.name === hatchLabel()) || hatches[0] || null;
+}
+
+function renderHatchControls() {
+  const h = hatchNow, ready = !h.loading && !h.error && h.online !== false;
+  const hatch = currentHatch();
+  $("hnControls").classList.toggle("hidden", !ready && !h.loading);
+  $("hatchVol").disabled = !ready;
+  $("hnSound").disabled = !ready || !(hatch && hatch.sounds && hatch.sounds.length);
+  $("hnStop").disabled = !ready || !h.playing;
+  if (ready && h.volume != null && document.activeElement !== $("hatchVol")) {
+    $("hatchVol").value = h.volume;
+    $("hatchVolLabel").textContent = h.volume + "%";
+    setFill($("hatchVol"));
+  }
+}
+
+// Show the change right away; the next check confirms it.
+function hatchControl(path, body, optimistic) {
+  Object.assign(hatchNow, optimistic);
+  renderHatchNow();
+  return api(path, { hatch: hatchLabel(), ...body }).then(loadState).catch((e) => { toast(e.message, true); loadHatchNow(true); });
+}
+
+$("hatchVol").oninput = () => { $("hatchVolLabel").textContent = $("hatchVol").value + "%"; setFill($("hatchVol")); };
+$("hatchVol").onchange = () => {
+  const volume = Number($("hatchVol").value);
+  hatchControl("/api/hatch-volume", { volume }, { volume });
+};
+$("hnStop").onclick = () => hatchControl("/api/hatch-sound", { sound: null }, { playing: false, sound: null, routine: null });
+$("hnSound").onclick = () => {
+  const hatch = currentHatch(), list = $("soundList");
+  list.textContent = "";
+  (hatch ? hatch.sounds : []).forEach((snd) => {
+    const b = el("button", "option");
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(!!hatchNow.playing && hatchNow.sound === snd.title));
+    const tick = el("span", "tick"); tick.innerHTML = ICONS.check;
+    b.append(el("span", "label", snd.title), tick);
+    b.onclick = () => {
+      $("soundSheet").close();
+      hatchControl("/api/hatch-sound", { sound: snd.id }, { playing: true, sound: snd.title, routine: null });
+    };
+    list.appendChild(b);
+  });
+  $("soundSheet").showModal();
+};
 
 $("hnRefresh").onclick = () => loadHatchNow(true);
 setInterval(() => { if (!document.hidden) loadHatchNow(false); }, 60000);
@@ -719,7 +802,7 @@ function renderDock() {
   s.className = "status";
   s.textContent = "";
   if (job && job.busy) {
-    s.append(el("span", "spinner"), el("span", null, "Turning on the nightlight…"));
+    s.append(el("span", "spinner"), el("span", null, job.message));
   } else if (job && job.at && Date.now() / 1000 - job.at < 12) {
     s.classList.add(job.ok ? "ok" : "err");
     const icon = el("span"); icon.innerHTML = job.ok ? ICONS.check : ICONS.alert;
@@ -789,7 +872,7 @@ async function loadState() {
   $("logoutForm").classList.toggle("hidden", !state.login_enabled);
   renderFavorites(); renderSpeakers(); renderNow(); renderDock();
   const busyNow = !!(state.hatch_job && state.hatch_job.busy);
-  if (lastJobBusy && !busyNow) loadHatchNow(true);  // the Hatch just changed
+  if (lastJobBusy && !busyNow) loadHatchNow(true, true);  // the Hatch just changed
   lastJobBusy = busyNow;
   schedule();
 }
@@ -814,7 +897,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) { gr
   if (!prefs.hatch && d.hatch) prefs.hatch = d.hatch;
   $("brightness").value = prefs.brightness;
   $("brightLabel").textContent = prefs.brightness + "%";
-  setFill($("brightness")); setFill($("volume"));
+  setFill($("brightness")); setFill($("volume")); setFill($("hatchVol"));
   renderSwatches();
   renderHatchNow();
   await loadHatches();

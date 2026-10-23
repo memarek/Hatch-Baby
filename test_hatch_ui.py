@@ -353,3 +353,38 @@ class FeatureTests(unittest.TestCase):
                     break
                 time.sleep(0.02)
             self.assertEqual(self.app.status_cache, {})
+
+    def wait_for_job(self):
+        for _ in range(100):
+            if not self.app.hatch_job["busy"]:
+                return
+            time.sleep(0.02)
+
+    def test_hatch_volume_and_sound_controls(self):
+        device = mock.MagicMock()
+        device.device_name = "Nursery"
+        device.is_light_on = False
+        device.sounds = [{"id": 1, "title": "Dryer", "wavUrl": "u"}]
+        type(device).__name__ = "RestIot"
+        with mock.patch.object(hatch_ui, "run_hatch", lambda action: action([device])):
+            self.assertEqual(self.request("POST", "/api/hatch-volume", json.dumps({"volume": 35})).status, 200)
+            self.wait_for_job()
+            device.set_volume.assert_called_with(35)
+            self.assertEqual(self.app.hatch_job["message"], "Hatch volume 35%")
+
+            self.request("POST", "/api/hatch-sound", json.dumps({"sound": 1}))
+            self.wait_for_job()
+            device.set_sound.assert_called_with(1)
+            self.assertEqual(self.app.hatch_job["message"], "Playing Dryer on the Hatch")
+
+            self.request("POST", "/api/hatch-sound", json.dumps({"sound": None}))
+            self.wait_for_job()
+            device.turn_off.assert_called_once()
+            self.assertEqual(self.app.hatch_job["message"], "Hatch sound stopped")
+
+            self.request("POST", "/api/hatch-sound", json.dumps({"sound": 99}))
+            self.wait_for_job()
+            self.assertFalse(self.app.hatch_job["ok"])
+            self.assertIn("isn't available", self.app.hatch_job["message"])
+
+        self.assertEqual(self.request("POST", "/api/hatch-volume", json.dumps({"volume": 500})).status, 400)
