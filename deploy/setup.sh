@@ -43,7 +43,22 @@ id bedtime >/dev/null 2>&1 || useradd --system --home-dir "$STATE_DIR" --shell /
 step "Installing the app to $APP_DIR (owned by root, read-only to the app)"
 install -d -m 755 "$APP_DIR"
 cp -r "$REPO_DIR/hatch_spotify.py" "$REPO_DIR/hatch_ui.py" "$REPO_DIR/ui" "$REPO_DIR/requirements.txt" "$APP_DIR/"
-[ -d "$APP_DIR/venv" ] || python3 -m venv "$APP_DIR/venv"
+# hatch_rest_api needs Python 3.12+. Older systems (Debian 12, Raspberry Pi OS
+# bookworm) get a private Python from uv under $APP_DIR, leaving the system alone.
+is_new_enough() { "$1" -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; }
+if [ -x "$APP_DIR/venv/bin/python" ] && ! is_new_enough "$APP_DIR/venv/bin/python"; then
+  rm -rf "$APP_DIR/venv"  # left over from a run with an older Python
+fi
+if [ ! -d "$APP_DIR/venv" ]; then
+  if is_new_enough python3; then
+    python3 -m venv "$APP_DIR/venv"
+  else
+    echo "This system has Python $(python3 -c 'import platform; print(platform.python_version())'); installing Python 3.12 for Bedtime"
+    # uv comes from PyPI like the app's other packages.
+    [ -x "$APP_DIR/uv/bin/uv" ] || { python3 -m venv "$APP_DIR/uv" && "$APP_DIR/uv/bin/pip" install -q uv; }
+    UV_PYTHON_INSTALL_DIR="$APP_DIR/python" "$APP_DIR/uv/bin/uv" venv --seed --python 3.12 "$APP_DIR/venv"
+  fi
+fi
 "$APP_DIR/venv/bin/pip" install -q --upgrade pip
 "$APP_DIR/venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 chown -R root:root "$APP_DIR"
