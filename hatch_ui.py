@@ -28,7 +28,8 @@ UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 SESSION_COOKIE = "bedtime_session"
 SESSION_DAYS = 90
 MAX_BODY_BYTES = 64 * 1024
-MAX_FAILED_LOGINS = 5
+MAX_FAILED_LOGINS = 5  # per visitor, before that visitor is locked out
+MAX_FAILED_LOGINS_TOTAL = 50  # across everyone, caps guessing from many addresses
 LOCKOUT_SECONDS = 15 * 60
 
 SECURITY_HEADERS = {
@@ -89,7 +90,7 @@ class Guard:
     def __init__(self, password, secret):
         self.password = password
         self.secret = secret
-        self.failures = []
+        self.failures = []  # (time, client) for each wrong password
         self.lock = threading.Lock()
 
     @property
@@ -107,16 +108,21 @@ class Guard:
         return (expires.isdigit() and int(expires) > time.time()
                 and hmac.compare_digest(sig, self._sign(expires)))
 
-    def check_password(self, attempt):
-        """Returns True/False, or None while locked out."""
+    def check_password(self, attempt, client="unknown"):
+        """Returns True/False, or None while this client (or everyone) is locked out.
+
+        Already logged-in browsers keep working during a lockout; it only
+        blocks new logins.
+        """
         with self.lock:
             now = time.time()
-            self.failures = [t for t in self.failures if now - t < LOCKOUT_SECONDS]
-            if len(self.failures) >= MAX_FAILED_LOGINS:
+            self.failures = [(t, c) for t, c in self.failures if now - t < LOCKOUT_SECONDS]
+            mine = sum(1 for _, c in self.failures if c == client)
+            if mine >= MAX_FAILED_LOGINS or len(self.failures) >= MAX_FAILED_LOGINS_TOTAL:
                 return None
             ok = hmac.compare_digest(attempt.encode(), self.password.encode())
             if not ok:
-                self.failures.append(now)
+                self.failures.append((now, client))
             return ok
 
     def _sign(self, value):
@@ -304,11 +310,25 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
                 raise hs.ControlError("Request too large")
             return self.rfile.read(length)
 
+        def client(self):
+            """Best guess at who is connecting, for per-visitor lockouts.
+
+            Behind a proxy (Tailscale), use the last X-Forwarded-For entry: the one
+            the proxy itself added. Earlier entries come from the visitor and can
+            be faked.
+            """
+            forwarded = self.headers.get("X-Forwarded-For")
+            if forwarded:
+                return forwarded.split(",")[-1].strip()
+            return self.client_address[0]
+
         def login(self):
             form = parse_qs(self.read_body().decode())
-            ok = guard.check_password(form.get("password", [""])[0])
+            client = self.client()
+            ok = guard.check_password(form.get("password", [""])[0], client)
             if ok:
                 return self.redirect("/", self.session_cookie(guard.make_session(), SESSION_DAYS * 86400))
+            print(f"Failed login from {client}" + (" (locked out)" if ok is None else ""), flush=True)
             time.sleep(1)  # slow down guessing
             error = "locked" if ok is None else "wrong"
             return self.redirect(f"/login?error={error}")

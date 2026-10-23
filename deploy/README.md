@@ -92,6 +92,28 @@ sudo ./deploy/setup.sh --reconfigure    # re-enter Hatch/Spotify details
 sudo ./deploy/setup.sh --new-password   # forgot the Bedtime password
 ```
 
+## Public website option (no Tailscale app on phones)
+
+```bash
+sudo ./deploy/setup.sh --public    # anyone can reach the login page
+sudo ./deploy/setup.sh --private   # back to Tailscale devices only
+```
+
+`--public` keeps the same address but serves it to any browser through
+Tailscale Funnel, so your family doesn't need the Tailscale app. The choice is
+remembered when you re-run the script.
+
+The login page shows first and nothing else is reachable without the password.
+Keep the generated password; at 24 random characters it can't be guessed.
+Someone typing wrong passwords locks out only their own address for 15
+minutes, with a cap of 50 failed tries across everyone. Browsers that are
+already logged in keep working during a lockout. Failed logins appear in
+`sudo journalctl -u bedtime`.
+
+Public means one lock instead of two: the password is all that stands between
+the internet and your Hatch and Spotify controls. Private (the default) is the
+more secure choice.
+
 ## 5. Lock down the cloud firewall (Google Cloud only)
 
 Once you can reach the machine via Tailscale (`ssh <you>@bedtime` from a

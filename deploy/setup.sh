@@ -8,16 +8,21 @@
 # Safe to re-run: it updates the code and keeps your settings.
 #   sudo ./deploy/setup.sh --reconfigure   # re-enter Hatch/Spotify details
 #   sudo ./deploy/setup.sh --new-password  # make a new Bedtime password
+#   sudo ./deploy/setup.sh --public        # open it to any browser (login page first)
+#   sudo ./deploy/setup.sh --private       # back to your Tailscale devices only (default)
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo: sudo ./deploy/setup.sh"; exit 1; }
 
 RECONFIGURE=0
 NEW_PASSWORD_REQUESTED=0
+VISIBILITY=""  # public/private; empty keeps the saved choice
 for arg in "$@"; do
   case "$arg" in
     --reconfigure) RECONFIGURE=1 ;;
     --new-password) NEW_PASSWORD_REQUESTED=1 ;;
+    --public) VISIBILITY=public ;;
+    --private) VISIBILITY=private ;;
     *) echo "Unknown option: $arg"; exit 1 ;;
   esac
 done
@@ -132,6 +137,9 @@ set_env UI_PUBLIC_URL "$PUBLIC_URL"
 set_env UI_SECURE_COOKIES 1
 set_env SPOTIFY_REDIRECT_URI "$PUBLIC_URL/callback"
 NEW_PASSWORD=""
+# Remembered in .env so re-running the script (e.g. to update) keeps it.
+[ -n "$VISIBILITY" ] && set_env BEDTIME_VISIBILITY "$VISIBILITY"
+[ -n "$(get_env BEDTIME_VISIBILITY)" ] || set_env BEDTIME_VISIBILITY private
 if [ "$NEW_PASSWORD_REQUESTED" = 1 ] || [ -z "$(get_env UI_PASSWORD)" ]; then
   NEW_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')
   set_env UI_PASSWORD "$NEW_PASSWORD"
@@ -184,8 +192,20 @@ install -m 644 "$REPO_DIR/deploy/bedtime.service" /etc/systemd/system/bedtime.se
 systemctl daemon-reload
 systemctl enable bedtime >/dev/null
 
-step "Serving it over HTTPS to your Tailscale devices only"
-tailscale serve --bg 8888
+tailscale serve reset
+if [ "$(get_env BEDTIME_VISIBILITY)" = public ]; then
+  step "Publishing it at a public HTTPS address (login page first)"
+  if [ "$(get_env UI_PASSWORD | wc -c)" -lt 21 ]; then
+    echo "  Warning: your Bedtime password is short for a public site."
+    echo "  Run: sudo ./deploy/setup.sh --new-password"
+  fi
+  tailscale funnel --bg 8888
+  WHERE="On any phone or computer (no Tailscale app needed), open:"
+else
+  step "Serving it over HTTPS to your Tailscale devices only"
+  tailscale serve --bg 8888
+  WHERE="On your phone (with Tailscale installed and logged in), open:"
+fi
 
 if [ "$CONFIGURED" = 1 ]; then
   systemctl restart bedtime
@@ -200,7 +220,7 @@ cat <<DONE
 ==========================================================
  $STATUS
 
- On your phone (with Tailscale installed and logged in), open:
+ $WHERE
     $PUBLIC_URL
  then log in and tap "Connect Spotify".
 DONE

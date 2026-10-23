@@ -47,6 +47,24 @@ class GuardTests(unittest.TestCase):
             self.assertFalse(self.guard.check_password("nope"))
         self.assertIsNone(self.guard.check_password(PASSWORD))
 
+    def test_lockout_is_per_client(self):
+        for _ in range(hatch_ui.MAX_FAILED_LOGINS):
+            self.guard.check_password("nope", "1.2.3.4")
+        self.assertIsNone(self.guard.check_password(PASSWORD, "1.2.3.4"))
+        self.assertTrue(self.guard.check_password(PASSWORD, "5.6.7.8"))
+
+    def test_total_cap_across_clients(self):
+        for i in range(hatch_ui.MAX_FAILED_LOGINS_TOTAL):
+            self.guard.check_password("nope", f"10.0.{i}.1")
+        self.assertIsNone(self.guard.check_password(PASSWORD, "5.6.7.8"))
+
+    def test_lockout_expires(self):
+        for _ in range(hatch_ui.MAX_FAILED_LOGINS):
+            self.guard.check_password("nope", "1.2.3.4")
+        later = time.time() + hatch_ui.LOCKOUT_SECONDS + 1
+        with mock.patch.object(hatch_ui.time, "time", return_value=later):
+            self.assertTrue(self.guard.check_password(PASSWORD, "1.2.3.4"))
+
     def test_disabled_allows_everything(self):
         self.assertTrue(hatch_ui.Guard("", b"k").valid_session(None))
 
@@ -97,6 +115,29 @@ class ServerTests(unittest.TestCase):
         cookie = res.getheader("Set-Cookie")
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Lax", cookie)
+
+    def test_lockout_uses_proxy_added_address(self):
+        form = {"Content-Type": "application/x-www-form-urlencoded"}
+        guard = hatch_ui.Guard(PASSWORD, b"k" * 32)
+        handler = hatch_ui.make_handler(self.app, guard)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            def attempt(xff, password="wrong"):
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1])
+                conn.request("POST", "/login", f"password={password}", {**form, "X-Forwarded-For": xff})
+                location = conn.getresponse().getheader("Location")
+                conn.close()
+                return location
+            with mock.patch.object(hatch_ui.time, "sleep"):
+                # An attacker faking the first entry still gets counted by the last one.
+                for i in range(hatch_ui.MAX_FAILED_LOGINS):
+                    attempt(f"9.9.9.{i}, 203.0.113.7")
+                self.assertEqual(attempt("203.0.113.7"), "/login?error=locked")
+                self.assertEqual(attempt("198.51.100.2", "correct+horse+battery"), "/")
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_security_headers(self):
         res = self.request("GET", "/")
