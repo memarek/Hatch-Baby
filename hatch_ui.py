@@ -52,8 +52,6 @@ STATIC_FILES = {
     "/icon-512.png": ("icon-512.png", "image/png"),
 }
 MAX_FAVORITES = 30
-HATCH_CACHE_SECONDS = 10 * 60
-HATCH_STATUS_SECONDS = 30
 
 MODEL_NAMES = {
     "RestMini": "Rest Mini",
@@ -65,13 +63,118 @@ MODEL_NAMES = {
     "RestoreV5": "Restore",
 }
 
-# One Hatch cloud connection at a time; each call logs in and connects to MQTT.
-hatch_lock = threading.Lock()
+def parse_expiration(value, now=None):
+    """AWS credential expiry from Hatch login: epoch seconds or an ISO date."""
+    now = now or time.time()
+    try:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            from datetime import datetime
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        pass
+    return now + 50 * 60
+
+
+class HatchConnection:
+    """One long-lived login to Hatch's cloud, shared by every request.
+
+    Logging in for every check and command got us rate limited (HTTP 429), so
+    log in once and keep the MQTT connection: device state then arrives live,
+    and commands are just messages on it. Reconnect only shortly before Hatch's
+    temporary AWS credentials expire, and back off when Hatch says to slow down.
+    """
+
+    REFRESH_MARGIN = 5 * 60
+    MIN_BACKOFF = 60
+    MAX_BACKOFF = 30 * 60
+
+    def __init__(self, email=None, password=None):
+        self.email, self.password = email, password
+        self.lock = threading.Lock()
+        self.loop = None
+        self.session = None
+        self.mqtt = None
+        self.devices = None
+        self.expires_at = 0
+        self.retry_at = 0
+        self.backoff = self.MIN_BACKOFF
+
+    def _run(self, coro, timeout=90):
+        if self.loop is None:
+            self.loop = asyncio.new_event_loop()
+            threading.Thread(target=self.loop.run_forever, daemon=True).start()
+        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+
+    async def _login(self):
+        from aiohttp import ClientSession
+        from hatch_rest_api import get_rest_devices
+
+        if self.session is None:
+            self.session = ClientSession()
+        _, mqtt, devices, expiration = await get_rest_devices(
+            email=self.email or hs.require_env("HATCH_EMAIL"),
+            password=self.password or hs.require_env("HATCH_PASSWORD"),
+            client_session=self.session,
+        )
+        return mqtt, devices, expiration
+
+    def _disconnect(self):
+        for device in self.devices or []:
+            try:
+                device.unsubscribe()
+            except Exception:
+                pass
+        if self.mqtt is not None:
+            try:
+                self.mqtt.disconnect().result(10)
+            except Exception:
+                pass
+        self.mqtt = self.devices = None
+
+    def connected_devices(self):
+        now = time.time()
+        if self.devices is not None and now < self.expires_at - self.REFRESH_MARGIN:
+            return self.devices
+        if now < self.retry_at:
+            minutes = max(1, round((self.retry_at - now) / 60))
+            raise hs.ControlError(f"Hatch asked us to slow down. Try again in {minutes} min.")
+        self._disconnect()
+        try:
+            mqtt, devices, expiration = self._run(self._login())
+        except Exception as e:
+            from hatch_rest_api import RateError
+
+            if isinstance(e, RateError):
+                self.retry_at = now + self.backoff
+                minutes = max(1, round(self.backoff / 60))
+                self.backoff = min(self.backoff * 2, self.MAX_BACKOFF)
+                raise hs.ControlError(f"Hatch asked us to slow down. Try again in {minutes} min.")
+            raise
+        self.backoff = self.MIN_BACKOFF
+        self.mqtt, self.devices, self.expires_at = mqtt, devices, parse_expiration(expiration, now)
+        for device in devices:
+            hs.wait_for_hatch_state(device)
+        return devices
+
+    def run(self, action):
+        with self.lock:
+            devices = self.connected_devices()
+            try:
+                return action(devices)
+            except hs.ControlError:
+                raise
+            except Exception:
+                self.expires_at = 0  # the connection may be broken; log in again next time
+                raise
+
+
+hatch_connection = HatchConnection()
 
 
 def run_hatch(action):
-    with hatch_lock:
-        return asyncio.run(hs.with_hatch(action))
+    return hatch_connection.run(action)
 
 
 def defaults():
@@ -150,8 +253,6 @@ class App:
         self.favorites_path = favorites_path
         self.settings_path = settings_path
         self.favorites_lock = threading.Lock()
-        self.hatch_cache = (0, None)  # (fetched at, device list)
-        self.status_cache = {}  # Hatch name -> (fetched at, snapshot)
         # Hatch commands take several seconds, so they run in the background and
         # the page polls this to show progress.
         self.hatch_job = {"busy": False, "ok": None, "message": "", "at": 0}
@@ -163,7 +264,7 @@ class App:
         def work():
             try:
                 result = run_hatch(action)
-                self.status_cache.clear()  # what's playing just changed
+                time.sleep(1)  # let the Hatch confirm before the page re-reads its state
                 message = done_message(result) if callable(done_message) else done_message
                 self.hatch_job = {"busy": False, "ok": True, "message": message, "at": time.time()}
             except Exception as e:
@@ -242,11 +343,35 @@ class App:
             else:
                 return info
         except Exception:
-            raise hs.ControlError("Couldn't find that on Spotify. Check the link.")
+            # Spotify-made playlists (IDs starting 37i9dQZF1) 404 for apps created
+            # after November 2024; the public link preview still describes them.
+            preview = self.link_preview(kind, item_id)
+            if not preview:
+                raise hs.ControlError("Couldn't find that on Spotify. Check the link.")
+            label = {"playlist": "Playlist", "album": "Album", "track": "Song", "artist": "Artist"}[kind]
+            return {**info, **preview, "subtitle": f"{label} · Spotify"}
         info["name"] = item.get("name") or info["name"]
         images = item.get("images") or []
         info["image"] = (images[1] if len(images) > 1 else images[0])["url"] if images else None
         return info
+
+    @staticmethod
+    def link_preview(kind, item_id):
+        """Title and cover from Spotify's public oEmbed endpoint, or None."""
+        import requests
+
+        try:
+            res = requests.get("https://open.spotify.com/oembed", timeout=10,
+                               params={"url": f"https://open.spotify.com/{kind}/{item_id}"})
+            res.raise_for_status()
+            data = res.json()
+        except Exception:
+            return None
+        title = data.get("title") if isinstance(data, dict) else None
+        if not isinstance(title, str) or not title:
+            return None
+        image = data.get("thumbnail_url")
+        return {"name": title[:100], "image": image if isinstance(image, str) and image.startswith("https://") else None}
 
     def spotify_authed(self):
         return bool(self.auth.validate_token(self.auth.cache_handler.get_cached_token()))
@@ -296,30 +421,22 @@ class App:
                 }
         return result
 
-    def hatches(self, query):
-        fetched_at, devices = self.hatch_cache
-        if devices is None or query.get("refresh") or time.time() - fetched_at > HATCH_CACHE_SECONDS:
-            devices = run_hatch(lambda ds: [
-                {"name": d.device_name, "model": MODEL_NAMES.get(type(d).__name__, type(d).__name__),
-                 "has_light": hasattr(d, "set_color"), "can_stream_url": hasattr(d, "set_sound_url"),
-                 "sounds": hs.hatch_sounds(d)}
-                for d in ds
-            ])
-            self.hatch_cache = (time.time(), devices)
-        return devices
+    def hatches(self, _):
+        return run_hatch(lambda ds: [
+            {"name": d.device_name, "model": MODEL_NAMES.get(type(d).__name__, type(d).__name__),
+             "has_light": hasattr(d, "set_color"), "can_stream_url": hasattr(d, "set_sound_url"),
+             "sounds": hs.hatch_sounds(d)}
+            for d in ds
+        ])
 
     def hatch_status(self, query):
-        name = query.get("hatch") or ""
-        fetched_at, snapshot = self.status_cache.get(name, (0, None))
-        if snapshot is None or query.get("refresh") or time.time() - fetched_at > HATCH_STATUS_SECONDS:
-            def read(ds):
-                device = hs.find_hatch_device(ds, name or None)
-                hs.wait_for_hatch_state(device)
-                return hs.hatch_snapshot(device)
-            snapshot = run_hatch(read)
-            fetched_at = time.time()
-            self.status_cache[name] = (fetched_at, snapshot)
-        return {**snapshot, "checked_at": fetched_at}
+        """Reads the live state the Hatch pushes to us; no login, no round trip."""
+        if query.get("refresh"):
+            run_hatch(lambda ds: [d.refresh() for d in ds if hasattr(d, "refresh")])  # ask it to resend its state
+            time.sleep(1.5)
+        name = query.get("hatch") or None
+        snapshot = run_hatch(lambda ds: hs.hatch_snapshot(hs.find_hatch_device(ds, name)))
+        return {**snapshot, "checked_at": time.time()}
 
     def add_favorite(self, body):
         uri = hs.to_spotify_uri((body.get("uri") or "").strip())
