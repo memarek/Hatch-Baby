@@ -229,6 +229,36 @@ class HatchControlTests(unittest.TestCase):
         hs.hatch_stop_sound(d)  # light on: only the sound
         self.assertEqual(d.calls, [("update", {"current": {"sound": {"id": hs.NO_SOUND_ID, "mute": True}}})])
 
+    def test_light_off_keeps_sound_playing(self):
+        d = self.rest_iot()
+        d.is_playing = True
+        hs.hatch_light(d, False)
+        self.assertEqual(d.calls, [("color", 0, 0, 0, 0)])
+
+    def test_light_off_with_nothing_playing_is_plain_off(self):
+        d = self.rest_iot()
+        d.is_playing = False
+        hs.hatch_light(d, False)
+        self.assertEqual(d.calls, [("off",)])
+
+    def test_light_on_only_sets_color(self):
+        d = self.rest_iot()
+        d.is_playing = True
+        hs.hatch_light(d, True, (255, 0, 0), 15)
+        self.assertEqual(d.calls, [("color", 255, 0, 0, 15)])
+
+    def test_light_on_rest_plus_powers_on(self):
+        d = RestPlus()
+        d.is_on = False
+        hs.hatch_light(d, True, (1, 2, 3), 10)
+        self.assertEqual(d.calls, [("on", True), ("color", 1, 2, 3, 10)])
+
+    def test_black_light_reads_as_off(self):
+        d = self.rest_iot()
+        d.is_light_on, d.red, d.green, d.blue, d.white, d.brightness = True, 0, 0, 0, 0, 0
+        d.is_online, d.is_playing, d.current_playing = True, False, "remote"
+        self.assertFalse(hs.hatch_snapshot(d)["light_on"])
+
     def test_volume(self):
         d = self.rest_iot()
         hs.hatch_set_volume(d, "35")

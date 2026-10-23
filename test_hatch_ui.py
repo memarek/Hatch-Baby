@@ -233,7 +233,8 @@ class FeatureTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         with mock.patch.object(hs, "spotify_auth", FakeAuth):
-            self.app = hatch_ui.App(os.path.join(self.tmp.name, "favorites.json"))
+            self.app = hatch_ui.App(os.path.join(self.tmp.name, "favorites.json"),
+                                    os.path.join(self.tmp.name, "settings.json"))
         self.sp = mock.MagicMock()
         self.sp.playlist.return_value = {
             "name": "Lullabies", "owner": {"display_name": "Spotify"},
@@ -388,3 +389,57 @@ class FeatureTests(unittest.TestCase):
             self.assertIn("isn't available", self.app.hatch_job["message"])
 
         self.assertEqual(self.request("POST", "/api/hatch-volume", json.dumps({"volume": 500})).status, 400)
+
+    def test_settings_are_validated_and_shared(self):
+        self.app.spotify_authed = lambda: False
+        state = json.loads(self.request("GET", "/api/state").body)
+        self.assertEqual(state["settings"], {"sleep_sound": None, "bedtime_volume": None})
+        ok = self.request("POST", "/api/settings", json.dumps(
+            {"sleep_sound": {"id": 10127, "title": "Dryer"}, "bedtime_volume": 25, "evil": "x"}))
+        self.assertEqual(ok.status, 200)
+        self.assertEqual(self.app.load_settings(), {"sleep_sound": {"id": 10127, "title": "Dryer"}, "bedtime_volume": 25})
+        with open(self.app.settings_path) as f:
+            self.assertNotIn("evil", f.read())
+        for bad in ({"bedtime_volume": 150}, {"sleep_sound": "Dryer"}, {"sleep_sound": {"id": [1], "title": "x"}}):
+            self.assertEqual(self.request("POST", "/api/settings", json.dumps(bad)).status, 400, bad)
+        self.request("POST", "/api/settings", json.dumps({"bedtime_volume": None}))
+        self.assertIsNone(self.app.load_settings()["bedtime_volume"])
+        self.assertEqual(self.app.load_settings()["sleep_sound"]["title"], "Dryer")
+
+    def test_bedtime_volume_is_used_when_starting(self):
+        self.sp.devices.return_value = {"devices": [{"id": "e1", "name": "Echo"}]}
+        self.request("POST", "/api/settings", json.dumps({"bedtime_volume": 25}))
+        self.request("POST", "/api/play", json.dumps({"uri": "spotify:playlist:abc", "speaker": "e1", "use_hatch": False}))
+        self.sp.volume.assert_called_with(25, device_id="e1")
+        self.sp.volume.reset_mock()
+        self.request("POST", "/api/settings", json.dumps({"bedtime_volume": None}))
+        self.request("POST", "/api/play", json.dumps({"uri": "spotify:playlist:abc", "speaker": "e1", "use_hatch": False}))
+        self.sp.volume.assert_not_called()
+
+    def test_switch_to_hatch(self):
+        res = self.request("POST", "/api/switch-to-hatch", "{}")
+        self.assertEqual(res.status, 400)
+        self.assertIn(b"Choose a sleep sound", res.body)
+        self.request("POST", "/api/settings", json.dumps({"sleep_sound": {"id": 1, "title": "Dryer"}}))
+        device = mock.MagicMock()
+        device.device_name = "Nursery"
+        device.sounds = [{"id": 1, "title": "Dryer", "wavUrl": "u"}]
+        type(device).__name__ = "RestIot"
+        with mock.patch.object(hatch_ui, "run_hatch", lambda action: action([device])):
+            self.assertEqual(self.request("POST", "/api/switch-to-hatch", "{}").status, 200)
+            self.wait_for_job()
+        self.sp.pause_playback.assert_called_once()
+        device.set_sound.assert_called_with(1)
+        self.assertEqual(self.app.hatch_job["message"], "Switched to Dryer")
+
+    def test_light_switch_endpoint(self):
+        device = mock.MagicMock()
+        device.device_name = "Nursery"
+        device.is_playing = True
+        type(device).__name__ = "RestIot"
+        with mock.patch.object(hatch_ui, "run_hatch", lambda action: action([device])):
+            self.request("POST", "/api/hatch-light", json.dumps({"on": False}))
+            self.wait_for_job()
+        device.set_color.assert_called_with(0, 0, 0, brightness=0)
+        device.turn_off.assert_not_called()
+        self.assertEqual(self.app.hatch_job["message"], "Light off")

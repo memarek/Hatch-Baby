@@ -143,11 +143,12 @@ class Guard:
 
 
 class App:
-    def __init__(self, favorites_path="favorites.json"):
+    def __init__(self, favorites_path="favorites.json", settings_path="settings.json"):
         self.auth = hs.spotify_auth()
         self.oauth_states = {}  # state -> created time, for the Spotify login round trip
         self.login_enabled = False
         self.favorites_path = favorites_path
+        self.settings_path = settings_path
         self.favorites_lock = threading.Lock()
         self.hatch_cache = (0, None)  # (fetched at, device list)
         self.status_cache = {}  # Hatch name -> (fetched at, snapshot)
@@ -172,6 +173,38 @@ class App:
                 self.hatch_job = {"busy": False, "ok": False, "message": message, "at": time.time()}
 
         threading.Thread(target=work, daemon=True).start()
+
+    def load_settings(self):
+        """Household settings shared by everyone who uses the page."""
+        try:
+            with open(self.settings_path) as f:
+                settings = json.load(f)
+        except (OSError, ValueError):
+            settings = {}
+        return {"sleep_sound": settings.get("sleep_sound"), "bedtime_volume": settings.get("bedtime_volume")}
+
+    def update_settings(self, body):
+        settings = self.load_settings()
+        if "sleep_sound" in body:
+            sound = body["sleep_sound"]
+            if sound is not None:
+                if not isinstance(sound, dict) or not isinstance(sound.get("id"), (int, str)) or not isinstance(sound.get("title"), str):
+                    raise hs.ControlError("Pick a sound from the list.")
+                sound = {"id": sound["id"], "title": sound["title"][:60]}
+            settings["sleep_sound"] = sound
+        if "bedtime_volume" in body:
+            volume = body["bedtime_volume"]
+            if volume is not None:
+                volume = int(volume)
+                if not 0 <= volume <= 100:
+                    raise hs.ControlError("Volume must be between 0 and 100.")
+            settings["bedtime_volume"] = volume
+        with self.favorites_lock:
+            tmp = self.settings_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(settings, f)
+            os.replace(tmp, self.settings_path)
+        return {"ok": True, "settings": settings}
 
     def load_favorites(self):
         try:
@@ -240,7 +273,8 @@ class App:
     def state(self, _):
         result = {"spotify_authed": self.spotify_authed(), "defaults": defaults(),
                   "login_enabled": self.login_enabled, "speakers": [], "playback": None,
-                  "favorites": self.load_favorites(), "hatch_job": self.hatch_job}
+                  "favorites": self.load_favorites(), "hatch_job": self.hatch_job,
+                  "settings": self.load_settings()}
         if result["spotify_authed"]:
             sp = self.sp()
             result["speakers"] = [
@@ -304,7 +338,8 @@ class App:
 
     def play(self, body):
         uri = hs.to_spotify_uri((body.get("uri") or "").strip())
-        device = hs.start_spotify(self.sp(), uri, body.get("speaker"), body.get("volume"), body.get("shuffle"))
+        volume = body["volume"] if "volume" in body else self.load_settings()["bedtime_volume"]
+        device = hs.start_spotify(self.sp(), uri, body.get("speaker"), volume, body.get("shuffle"))
         if body.get("use_hatch", True):
             rgb = hs.parse_hex_color(body.get("color") or defaults()["color"])
             brightness = int(body.get("brightness", defaults()["brightness"]))
@@ -345,6 +380,30 @@ class App:
     def hatch_off(self, body):
         self.run_hatch_job(lambda ds: hs.hatch_off(hs.find_hatch_device(ds, body.get("hatch"))),
                            "Hatch off", "Turning the Hatch off…")
+        return {"ok": True}
+
+    def switch_to_hatch(self, body):
+        """Pause Spotify and start the household's sleep sound on the Hatch."""
+        sound = self.load_settings()["sleep_sound"]
+        if not sound:
+            raise hs.ControlError("Choose a sleep sound first.")
+        sp = self.sp()
+        try:
+            sp.pause_playback()
+        except Exception:
+            pass  # nothing playing
+        self.run_hatch_job(
+            lambda ds: hs.hatch_play_sound(hs.find_hatch_device(ds, body.get("hatch")), sound["id"]),
+            lambda title: f"Switched to {title}", f"Starting {sound['title']} on the Hatch…")
+        return {"ok": True, "message": "Music paused"}
+
+    def hatch_light(self, body):
+        on = bool(body.get("on"))
+        rgb = hs.parse_hex_color(body.get("color") or defaults()["color"])
+        brightness = int(body.get("brightness", defaults()["brightness"]))
+        self.run_hatch_job(
+            lambda ds: hs.hatch_light(hs.find_hatch_device(ds, body.get("hatch")), on, rgb, brightness),
+            "Light on" if on else "Light off", "Turning the light on…" if on else "Turning the light off…")
         return {"ok": True}
 
     def hatch_volume(self, body):
@@ -389,6 +448,9 @@ ROUTES = {
     ("POST", "/api/hatch-url"): "hatch_url",
     ("POST", "/api/hatch-volume"): "hatch_volume",
     ("POST", "/api/hatch-sound"): "hatch_sound",
+    ("POST", "/api/hatch-light"): "hatch_light",
+    ("POST", "/api/switch-to-hatch"): "switch_to_hatch",
+    ("POST", "/api/settings"): "update_settings",
     ("POST", "/api/favorites"): "add_favorite",
     ("POST", "/api/favorites/remove"): "remove_favorite",
 }
@@ -561,7 +623,7 @@ def main():
     if password and len(password) < 12:
         raise SystemExit("UI_PASSWORD must be at least 12 characters.")
     try:
-        app = App(env("FAVORITES_FILE", "favorites.json"))
+        app = App(env("FAVORITES_FILE", "favorites.json"), env("SETTINGS_FILE", "settings.json"))
     except hs.ControlError as e:
         raise SystemExit(str(e))
     guard = Guard(password, load_secret(env("UI_SECRET_FILE", ".ui_secret")))

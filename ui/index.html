@@ -265,6 +265,42 @@
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
   #toast.error { background: var(--danger); color: #2b0000; }
 
+  /* Switch to the Hatch sound */
+  .now .switch-btn {
+    grid-column: 1 / -1; display: flex; width: 100%; align-items: center; justify-content: center; gap: 10px;
+    padding: 13px; border-radius: 14px; font-weight: 650; color: var(--accent);
+    background: rgba(255, 184, 107, .13);
+  }
+  .switch-btn svg { width: 18px; height: 18px; }
+
+  .hn-controls .chips { display: flex; gap: 8px; }
+
+  /* Settings bits */
+  .seg { display: flex; background: var(--surface-2); border-radius: 12px; padding: 3px; }
+  .seg button { flex: 1; padding: 10px; border-radius: 9px; font-weight: 600; font-size: 15px; color: var(--muted); }
+  .seg button[aria-pressed=true] { background: var(--text); color: var(--bg); }
+  .setting-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; }
+  .setting-row .label { flex: 1; }
+  .setting-row .label small { display: block; color: var(--muted); font-size: 14px; }
+
+  /* Pull to refresh */
+  #ptr {
+    position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 10px); z-index: 15;
+    width: 38px; height: 38px; margin-left: -19px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--surface-2); color: var(--text); box-shadow: 0 6px 20px rgba(0,0,0,.4);
+    opacity: 0; transform: translateY(-50px); pointer-events: none;
+  }
+  #ptr svg { width: 18px; height: 18px; }
+  #ptr.ready svg { color: var(--accent); }
+  #ptr.loading svg { animation: spin .8s linear infinite; }
+
+  /* Night mode: dim, red-tinted, easy on the eyes in a dark nursery */
+  html.night body { background: #070306; }
+  html.night main, html.night .dock, html.night dialog.sheet, html.night #toast, html.night #ptr {
+    filter: sepia(1) saturate(3.2) hue-rotate(-38deg) brightness(.55);
+  }
+  html.night .dock { background: rgba(7, 3, 6, .9); }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
   }
@@ -297,6 +333,7 @@
       <input type="range" id="volume" min="0" max="100" value="30" aria-label="Speaker volume">
       <button id="nextBtn" aria-label="Next"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 6.2v11.6a.8.8 0 0 0 1.2.7L14 13a1.2 1.2 0 0 0 0-2L5.2 5.5A.8.8 0 0 0 4 6.2z"/></svg></button>
     </div>
+    <button class="switch-btn hidden" id="switchBtn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a.6.6 0 0 0-.8-.7 9.5 9.5 0 1 0 12.6 12.6.6.6 0 0 0-.7-.8z"/></svg><span id="switchLabel">Switch to Hatch sound</span></button>
   </section>
 
   <section class="card hatchnow hidden" id="hatchNow">
@@ -315,9 +352,10 @@
         <input type="range" id="hatchVol" min="0" max="100" value="40" aria-label="Hatch volume">
         <span id="hatchVolLabel">40%</span>
       </label>
-      <div class="two">
-        <button class="chip-btn" id="hnSound"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>Change sound</span></button>
-        <button class="chip-btn danger" id="hnStop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span>Stop sound</span></button>
+      <div class="chips">
+        <button class="chip-btn" id="hnSound"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>Sound</span></button>
+        <button class="chip-btn" id="hnLight"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg><span id="hnLightLabel">Light</span></button>
+        <button class="chip-btn danger" id="hnStop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span>Stop</span></button>
       </div>
     </div>
   </section>
@@ -405,6 +443,31 @@
     <h3>Settings</h3>
 
     <div class="setting-group">
+      <h4>Bedtime</h4>
+      <button class="option" id="sleepSoundRow">
+        <span class="label">Sleep sound<small id="sleepSoundName">Not chosen yet</small></span>
+        <svg class="chev" style="width:18px;height:18px;color:var(--muted)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>
+      </button>
+      <label class="setting-row">
+        <span class="label">Set music volume at bedtime<small id="bedVolHint">Uses the speaker's current volume</small></span>
+        <input type="checkbox" class="switch" id="bedVolOn">
+      </label>
+      <label class="bright hidden" id="bedVolRow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+        <input type="range" id="bedVol" min="5" max="100" value="25" aria-label="Music volume at bedtime">
+        <span id="bedVolLabel">25%</span>
+      </label>
+    </div>
+
+    <div class="setting-group">
+      <h4>Night mode (this phone)</h4>
+      <div class="seg" id="nightSeg">
+        <button data-mode="auto">Auto</button><button data-mode="on">On</button><button data-mode="off">Off</button>
+      </div>
+      <p class="hint" style="margin:8px 0 0">Dim, red-tinted screen. Auto turns it on from 7pm to 7am.</p>
+    </div>
+
+    <div class="setting-group">
       <h4>Hatch</h4>
       <div id="hatchList"><p class="hint">Loading…</p></div>
       <div class="two" style="margin-top:12px">
@@ -431,6 +494,7 @@
 </dialog>
 
 <div id="toast" role="status" aria-live="polite"></div>
+<div id="ptr" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -465,6 +529,18 @@ const prefs = {
 };
 
 // ---------- helpers ----------
+// A tiny tap on success. iPhones don't support navigator.vibrate, but toggling a
+// hidden iOS "switch" checkbox makes Safari play a light haptic.
+const hapticSwitch = (() => {
+  const label = document.createElement("label"), input = document.createElement("input");
+  input.type = "checkbox"; input.setAttribute("switch", "");
+  label.style.display = "none"; label.appendChild(input); document.body.appendChild(label);
+  return label;
+})();
+function haptic() {
+  try { if (navigator.vibrate) navigator.vibrate(12); else hapticSwitch.click(); } catch {}
+}
+
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -565,7 +641,7 @@ $("addForm").addEventListener("submit", async (e) => {
   await busy($("addSave"), async () => {
     const r = await api("/api/favorites", { uri });
     prefs.uri = r.favorite.uri; store.set("uri", prefs.uri);
-    $("addSheet").close();
+    $("addSheet").close(); haptic();
     await loadState();
     $("favs").scrollTo({ left: 0, behavior: "smooth" });
     return r;
@@ -727,6 +803,8 @@ function renderHatchControls() {
   $("hatchVol").disabled = !ready;
   $("hnSound").disabled = !ready || !(hatch && hatch.sounds && hatch.sounds.length);
   $("hnStop").disabled = !ready || !h.playing;
+  $("hnLight").disabled = !ready || !(hatch ? hatch.has_light : h.has_light);
+  $("hnLightLabel").textContent = h.light_on ? "Light off" : "Light on";
   if (ready && h.volume != null && document.activeElement !== $("hatchVol")) {
     $("hatchVol").value = h.volume;
     $("hatchVolLabel").textContent = h.volume + "%";
@@ -738,7 +816,9 @@ function renderHatchControls() {
 function hatchControl(path, body, optimistic) {
   Object.assign(hatchNow, optimistic);
   renderHatchNow();
-  return api(path, { hatch: hatchLabel(), ...body }).then(loadState).catch((e) => { toast(e.message, true); loadHatchNow(true); });
+  return api(path, { hatch: hatchLabel(), ...body })
+    .then(() => { haptic(); return loadState(); })
+    .catch((e) => { toast(e.message, true); loadHatchNow(true); });
 }
 
 $("hatchVol").oninput = () => { $("hatchVolLabel").textContent = $("hatchVol").value + "%"; setFill($("hatchVol")); };
@@ -747,23 +827,137 @@ $("hatchVol").onchange = () => {
   hatchControl("/api/hatch-volume", { volume }, { volume });
 };
 $("hnStop").onclick = () => hatchControl("/api/hatch-sound", { sound: null }, { playing: false, sound: null, routine: null });
-$("hnSound").onclick = () => {
+$("hnLight").onclick = () => {
+  const on = !hatchNow.light_on, brightness = Number($("brightness").value);
+  hatchControl("/api/hatch-light", { on, color: prefs.color, brightness },
+               { light_on: on, color: on ? prefs.color : null, brightness: on ? brightness : null });
+};
+
+function openSoundPicker({ title, hint, current, onPick }) {
   const hatch = currentHatch(), list = $("soundList");
+  $("soundSheet").querySelector("h3").textContent = title;
+  $("soundSheet").querySelector(".hint").textContent = hint;
   list.textContent = "";
-  (hatch ? hatch.sounds : []).forEach((snd) => {
+  const sounds = hatch ? hatch.sounds || [] : [];
+  if (!sounds.length) list.appendChild(el("p", "hint", "Couldn't load this Hatch's sounds. Try again in a moment."));
+  sounds.forEach((snd) => {
     const b = el("button", "option");
     b.setAttribute("role", "radio");
-    b.setAttribute("aria-checked", String(!!hatchNow.playing && hatchNow.sound === snd.title));
+    b.setAttribute("aria-checked", String(current === snd.title));
     const tick = el("span", "tick"); tick.innerHTML = ICONS.check;
     b.append(el("span", "label", snd.title), tick);
-    b.onclick = () => {
-      $("soundSheet").close();
-      hatchControl("/api/hatch-sound", { sound: snd.id }, { playing: true, sound: snd.title, routine: null });
-    };
+    b.onclick = () => { $("soundSheet").close(); onPick(snd); };
     list.appendChild(b);
   });
   $("soundSheet").showModal();
+}
+
+$("hnSound").onclick = () => openSoundPicker({
+  title: "Hatch sound", hint: "Plays on the Hatch's own speaker.",
+  current: hatchNow.playing ? hatchNow.sound : null,
+  onPick: (snd) => hatchControl("/api/hatch-sound", { sound: snd.id }, { playing: true, sound: snd.title, routine: null }),
+});
+
+// ---------- switch from music to the Hatch sound ----------
+async function saveSettings(patch) {
+  const r = await api("/api/settings", patch);
+  state.settings = r.settings;
+  renderSettings();
+  return r;
+}
+
+function pickSleepSound(then) {
+  openSoundPicker({
+    title: "Sleep sound", hint: "The Hatch sound to switch to once the music's done.",
+    current: state.settings.sleep_sound && state.settings.sleep_sound.title,
+    onPick: async (snd) => {
+      try { await saveSettings({ sleep_sound: { id: snd.id, title: snd.title } }); haptic(); if (then) then(); }
+      catch (e) { toast(e.message, true); }
+    },
+  });
+}
+
+async function switchToHatch() {
+  const sound = state.settings.sleep_sound;
+  if (!sound) { pickSleepSound(switchToHatch); return; }
+  await busy($("switchBtn"), async () => {
+    const r = await api("/api/switch-to-hatch", { hatch: hatchLabel() });
+    Object.assign(hatchNow, { playing: true, sound: sound.title, routine: null });
+    renderHatchNow(); haptic();
+    await loadState();
+    return { message: `Switching to ${sound.title}…` };
+  });
+}
+$("switchBtn").onclick = switchToHatch;
+
+// ---------- settings: sleep sound, bedtime volume, night mode ----------
+function renderSettings() {
+  const st = (state && state.settings) || {};
+  $("sleepSoundName").textContent = st.sleep_sound ? st.sleep_sound.title : "Not chosen yet";
+  $("switchLabel").textContent = st.sleep_sound ? `Switch to ${st.sleep_sound.title}` : "Switch to Hatch sound";
+  const on = st.bedtime_volume != null;
+  $("bedVolOn").checked = on;
+  $("bedVolRow").classList.toggle("hidden", !on);
+  $("bedVolHint").textContent = on ? "Music starts at this volume" : "Uses the speaker's current volume";
+  if (on && document.activeElement !== $("bedVol")) {
+    $("bedVol").value = st.bedtime_volume; $("bedVolLabel").textContent = st.bedtime_volume + "%"; setFill($("bedVol"));
+  }
+  const mode = store.get("night", "auto");
+  $("nightSeg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+}
+
+$("sleepSoundRow").onclick = () => { $("settingsSheet").close(); pickSleepSound(); };
+$("bedVolOn").onchange = () => saveSettings({ bedtime_volume: $("bedVolOn").checked ? Number($("bedVol").value) : null })
+  .catch((e) => { toast(e.message, true); renderSettings(); });
+$("bedVol").oninput = () => { $("bedVolLabel").textContent = $("bedVol").value + "%"; setFill($("bedVol")); };
+$("bedVol").onchange = () => saveSettings({ bedtime_volume: Number($("bedVol").value) }).catch((e) => toast(e.message, true));
+$("nightSeg").onclick = (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  store.set("night", b.dataset.mode);
+  applyNight(); renderSettings(); haptic();
 };
+
+function applyNight() {
+  const mode = store.get("night", "auto"), h = new Date().getHours();
+  const on = mode === "on" || (mode === "auto" && (h >= 19 || h < 7));
+  document.documentElement.classList.toggle("night", on);
+  document.querySelector('meta[name="theme-color"]').content = on ? "#070306" : "#0c0f22";
+}
+applyNight();
+setInterval(applyNight, 60000);
+
+// ---------- pull down to refresh ----------
+(() => {
+  const ptr = $("ptr"), THRESHOLD = 70;
+  let startY = null, pulled = 0, refreshing = false;
+  document.addEventListener("touchstart", (e) => {
+    if (refreshing || window.scrollY > 0 || document.querySelector("dialog[open]")) return;
+    startY = e.touches[0].clientY; pulled = 0;
+  }, { passive: true });
+  document.addEventListener("touchmove", (e) => {
+    if (startY === null) return;
+    pulled = Math.max(0, (e.touches[0].clientY - startY) / 2);
+    const shown = Math.min(pulled, THRESHOLD + 10);
+    ptr.style.opacity = Math.min(1, shown / THRESHOLD);
+    ptr.style.transform = `translateY(${shown - 50}px) rotate(${shown * 4}deg)`;
+    ptr.classList.toggle("ready", pulled >= THRESHOLD);
+  }, { passive: true });
+  document.addEventListener("touchend", async () => {
+    if (startY === null) return;
+    startY = null;
+    if (pulled < THRESHOLD) { ptr.style.opacity = 0; ptr.style.transform = ""; return; }
+    refreshing = true; haptic();
+    ptr.classList.add("loading");
+    ptr.style.transform = `translateY(${THRESHOLD - 50}px)`;
+    try { await Promise.all([loadState(), loadHatchNow(true, true)]); }
+    finally {
+      refreshing = false;
+      ptr.classList.remove("loading", "ready");
+      ptr.style.opacity = 0; ptr.style.transform = "";
+    }
+  });
+})();
 
 $("hnRefresh").onclick = () => loadHatchNow(true);
 setInterval(() => { if (!document.hidden) loadHatchNow(false); }, 60000);
@@ -781,6 +975,7 @@ function renderNow() {
   $("eq").classList.toggle("paused", !pb.is_playing);
   $("ppBtn").innerHTML = pb.is_playing ? ICONS.pause : ICONS.play;
   $("ppBtn").setAttribute("aria-label", pb.is_playing ? "Pause" : "Play");
+  $("switchBtn").classList.toggle("hidden", !pb.is_playing || !hatches.length);
   const sp = (state.speakers || []).find((s) => s.name === pb.device) || currentSpeaker();
   if (sp && sp.volume != null && document.activeElement !== $("volume")) { $("volume").value = sp.volume; setFill($("volume")); }
 }
@@ -832,7 +1027,7 @@ $("startBtn").onclick = async () => {
       use_hatch: $("useHatch").checked, color: prefs.color, brightness: Number($("brightness").value),
     });
     toast(r.message);
-    if (navigator.vibrate) navigator.vibrate(15);
+    haptic();
   } catch (e) { toast(e.message, true); }
   finally { starting = false; await loadState(); }
 };
@@ -870,7 +1065,7 @@ async function loadState() {
   catch (e) { toast(e.message, true); return; }
   $("connect").classList.toggle("hidden", state.spotify_authed);
   $("logoutForm").classList.toggle("hidden", !state.login_enabled);
-  renderFavorites(); renderSpeakers(); renderNow(); renderDock();
+  renderFavorites(); renderSpeakers(); renderNow(); renderDock(); renderSettings();
   const busyNow = !!(state.hatch_job && state.hatch_job.busy);
   if (lastJobBusy && !busyNow) loadHatchNow(true, true);  // the Hatch just changed
   lastJobBusy = busyNow;
@@ -882,7 +1077,7 @@ function schedule() {
   const fast = state && state.hatch_job && (state.hatch_job.busy || Date.now() / 1000 - state.hatch_job.at < 12);
   schedule.t = setTimeout(() => { if (!document.hidden) loadState(); else schedule(); }, fast ? 1500 : 15000);
 }
-document.addEventListener("visibilitychange", () => { if (!document.hidden) { greet(); loadState(); loadHatchNow(false); } });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { greet(); applyNight(); loadState(); loadHatchNow(false); } });
 
 (async function init() {
   greet();
@@ -901,6 +1096,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) { gr
   renderSwatches();
   renderHatchNow();
   await loadHatches();
+  renderNow();  // the switch button needs the Hatch list
   loadHatchNow(false);
 })();
 </script>

@@ -276,6 +276,25 @@ def hatch_stop_sound(device):
         stop_hatch_sound(device)
 
 
+def hatch_light(device, on, rgb=(255, 106, 0), brightness=20):
+    """Turn just the light on or off. A playing Hatch sound keeps playing."""
+    kind = type(device).__name__
+    if not hasattr(device, "set_color"):
+        raise ControlError("This Hatch has no light.")
+    playing = bool(getattr(device, "is_playing", False))
+    if on:
+        if kind == "RestPlus" and not getattr(device, "is_on", True):
+            device.set_on(True)
+        r, g, b = rgb
+        device.set_color(r, g, b, brightness=brightness)
+    elif not playing:
+        # Nothing else is on, so the plain "off" is right.
+        device.set_on(False) if kind == "RestPlus" else device.turn_off()
+    else:
+        # Not turn_light_off(): on newer models it stops the sound too.
+        device.set_color(0, 0, 0, brightness=0)
+
+
 def hatch_set_volume(device, percentage):
     percentage = int(percentage)
     if not 0 <= percentage <= 100:
@@ -311,7 +330,8 @@ def hatch_snapshot(device):
     if kind == "RestPlus":
         light_on = bool(getattr(device, "is_on", False) and getattr(device, "brightness", 0))
     else:
-        light_on = bool(getattr(device, "is_light_on", False))
+        light_on = bool(getattr(device, "is_light_on", False) and getattr(device, "brightness", 0)
+                        and any(int(getattr(device, c, 0) or 0) for c in ("red", "green", "blue", "white")))
     rgb = tuple(int(getattr(device, c, 0) or 0) for c in ("red", "green", "blue"))
     return {
         "name": device.device_name,
