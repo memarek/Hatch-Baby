@@ -35,14 +35,24 @@ LOCKOUT_SECONDS = 15 * 60
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "img-src 'self' https://i.scdn.co data:; connect-src 'self'; form-action 'self'; "
-        "base-uri 'none'; frame-ancestors 'none'"
+        "img-src 'self' https://*.scdn.co https://*.spotifycdn.com data:; connect-src 'self'; "
+        "manifest-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
     ),
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "same-origin",  # no-referrer makes browsers send "Origin: null" on forms
     "Cache-Control": "no-store",
 }
+
+# App icon and manifest: public so phones can fetch them when adding to the home screen.
+STATIC_FILES = {
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/icon.svg": ("icon.svg", "image/svg+xml"),
+    "/icon-180.png": ("icon-180.png", "image/png"),
+    "/icon-512.png": ("icon-512.png", "image/png"),
+}
+MAX_FAVORITES = 30
+HATCH_CACHE_SECONDS = 10 * 60
 
 MODEL_NAMES = {
     "RestMini": "Rest Mini",
@@ -132,10 +142,73 @@ class Guard:
 
 
 class App:
-    def __init__(self):
+    def __init__(self, favorites_path="favorites.json"):
         self.auth = hs.spotify_auth()
         self.oauth_states = {}  # state -> created time, for the Spotify login round trip
         self.login_enabled = False
+        self.favorites_path = favorites_path
+        self.favorites_lock = threading.Lock()
+        self.hatch_cache = (0, None)  # (fetched at, device list)
+        # Hatch commands take several seconds, so they run in the background and
+        # the page polls this to show progress.
+        self.hatch_job = {"busy": False, "ok": None, "message": "", "at": 0}
+
+    def run_hatch_job(self, action, done_message):
+        self.hatch_job = {"busy": True, "ok": None, "message": "Talking to the Hatch…", "at": time.time()}
+
+        def work():
+            try:
+                run_hatch(action)
+                self.hatch_job = {"busy": False, "ok": True, "message": done_message, "at": time.time()}
+            except Exception as e:
+                if not isinstance(e, hs.ControlError):
+                    traceback.print_exc()
+                message = str(e) if isinstance(e, hs.ControlError) else "Couldn't reach the Hatch. Try again."
+                self.hatch_job = {"busy": False, "ok": False, "message": message, "at": time.time()}
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def load_favorites(self):
+        try:
+            with open(self.favorites_path) as f:
+                favorites = json.load(f)
+            return favorites if isinstance(favorites, list) else []
+        except (OSError, ValueError):
+            return []
+
+    def save_favorites(self, favorites):
+        tmp = self.favorites_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(favorites, f)
+        os.replace(tmp, self.favorites_path)
+
+    def describe(self, uri):
+        """Name, subtitle and cover art for a Spotify URI, for the favorites list."""
+        _, kind, item_id = uri.split(":", 2)
+        sp = self.sp()
+        info = {"uri": uri, "name": "Spotify " + kind, "subtitle": "", "image": None}
+        try:
+            if kind == "playlist":
+                item = sp.playlist(item_id, fields="name,images,owner(display_name)")
+                info["subtitle"] = "Playlist · " + ((item.get("owner") or {}).get("display_name") or "")
+            elif kind == "album":
+                item = sp.album(item_id)
+                info["subtitle"] = "Album · " + ", ".join(a["name"] for a in item.get("artists", []))
+            elif kind == "track":
+                item = sp.track(item_id)
+                item["images"] = (item.get("album") or {}).get("images")
+                info["subtitle"] = "Song · " + ", ".join(a["name"] for a in item.get("artists", []))
+            elif kind == "artist":
+                item = sp.artist(item_id)
+                info["subtitle"] = "Artist"
+            else:
+                return info
+        except Exception:
+            raise hs.ControlError("Couldn't find that on Spotify. Check the link.")
+        info["name"] = item.get("name") or info["name"]
+        images = item.get("images") or []
+        info["image"] = (images[1] if len(images) > 1 else images[0])["url"] if images else None
+        return info
 
     def spotify_authed(self):
         return bool(self.auth.validate_token(self.auth.cache_handler.get_cached_token()))
@@ -161,7 +234,8 @@ class App:
 
     def state(self, _):
         result = {"spotify_authed": self.spotify_authed(), "defaults": defaults(),
-                  "login_enabled": self.login_enabled, "speakers": [], "playback": None}
+                  "login_enabled": self.login_enabled, "speakers": [], "playback": None,
+                  "favorites": self.load_favorites(), "hatch_job": self.hatch_job}
         if result["spotify_authed"]:
             sp = self.sp()
             result["speakers"] = [
@@ -177,17 +251,37 @@ class App:
                     "is_playing": pb.get("is_playing"),
                     "title": item.get("name"),
                     "artist": ", ".join(a["name"] for a in item.get("artists", [])),
-                    "image": images[-1]["url"] if images else None,
+                    "image": (images[1] if len(images) > 1 else images[0])["url"] if images else None,
+                    "context": (pb.get("context") or {}).get("uri"),
                     "device": (pb.get("device") or {}).get("name"),
                 }
         return result
 
-    def hatches(self, _):
-        return run_hatch(lambda ds: [
-            {"name": d.device_name, "model": MODEL_NAMES.get(type(d).__name__, type(d).__name__),
-             "has_light": hasattr(d, "set_color"), "can_stream_url": hasattr(d, "set_sound_url")}
-            for d in ds
-        ])
+    def hatches(self, query):
+        fetched_at, devices = self.hatch_cache
+        if devices is None or query.get("refresh") or time.time() - fetched_at > HATCH_CACHE_SECONDS:
+            devices = run_hatch(lambda ds: [
+                {"name": d.device_name, "model": MODEL_NAMES.get(type(d).__name__, type(d).__name__),
+                 "has_light": hasattr(d, "set_color"), "can_stream_url": hasattr(d, "set_sound_url")}
+                for d in ds
+            ])
+            self.hatch_cache = (time.time(), devices)
+        return devices
+
+    def add_favorite(self, body):
+        uri = hs.to_spotify_uri((body.get("uri") or "").strip())
+        info = self.describe(uri)
+        with self.favorites_lock:
+            favorites = [f for f in self.load_favorites() if f.get("uri") != uri]
+            favorites.insert(0, info)
+            self.save_favorites(favorites[:MAX_FAVORITES])
+        return {"ok": True, "favorite": info, "message": f"Saved {info['name']}"}
+
+    def remove_favorite(self, body):
+        with self.favorites_lock:
+            favorites = [f for f in self.load_favorites() if f.get("uri") != body.get("uri")]
+            self.save_favorites(favorites)
+        return {"ok": True}
 
     def play(self, body):
         uri = hs.to_spotify_uri((body.get("uri") or "").strip())
@@ -195,7 +289,9 @@ class App:
         if body.get("use_hatch", True):
             rgb = hs.parse_hex_color(body.get("color") or defaults()["color"])
             brightness = int(body.get("brightness", defaults()["brightness"]))
-            run_hatch(lambda ds: hs.hatch_nightlight(hs.find_hatch_device(ds, body.get("hatch")), rgb, brightness))
+            self.run_hatch_job(
+                lambda ds: hs.hatch_nightlight(hs.find_hatch_device(ds, body.get("hatch")), rgb, brightness),
+                "Nightlight on")
         return {"ok": True, "message": f"Playing on {device['name']}"}
 
     def pause(self, _):
@@ -222,12 +318,14 @@ class App:
     def light(self, body):
         rgb = hs.parse_hex_color(body["color"])
         brightness = int(body["brightness"])
-        run_hatch(lambda ds: hs.hatch_nightlight(hs.find_hatch_device(ds, body.get("hatch")), rgb, brightness))
-        return {"ok": True, "message": "Nightlight updated"}
+        self.run_hatch_job(
+            lambda ds: hs.hatch_nightlight(hs.find_hatch_device(ds, body.get("hatch")), rgb, brightness),
+            "Nightlight updated")
+        return {"ok": True}
 
     def hatch_off(self, body):
-        run_hatch(lambda ds: hs.hatch_off(hs.find_hatch_device(ds, body.get("hatch"))))
-        return {"ok": True, "message": "Hatch off"}
+        self.run_hatch_job(lambda ds: hs.hatch_off(hs.find_hatch_device(ds, body.get("hatch"))), "Hatch off")
+        return {"ok": True}
 
     def hatch_url(self, body):
         url = (body.get("url") or "").strip()
@@ -250,6 +348,8 @@ ROUTES = {
     ("POST", "/api/light"): "light",
     ("POST", "/api/hatch-off"): "hatch_off",
     ("POST", "/api/hatch-url"): "hatch_url",
+    ("POST", "/api/favorites"): "add_favorite",
+    ("POST", "/api/favorites/remove"): "remove_favorite",
 }
 
 
@@ -343,6 +443,10 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
             url = urlparse(self.path)
             if method == "POST" and not self.same_origin():
                 return self.send(403, {"error": "Cross-site request blocked"})
+            if method == "GET" and url.path in STATIC_FILES:
+                name, content_type = STATIC_FILES[url.path]
+                with open(os.path.join(UI_DIR, name), "rb") as f:
+                    return self.send(200, f.read(), content_type, {"Cache-Control": "public, max-age=86400"})
 
             if guard.enabled:
                 if url.path == "/login":
@@ -379,7 +483,12 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
                 # which this server never approves.
                 if method == "POST" and self.headers.get("Content-Type") != "application/json":
                     return self.send(415, {"error": "Expected JSON"})
-                body = json.loads(self.read_body() or b"{}") if method == "POST" else {}
+                if method == "POST":
+                    body = json.loads(self.read_body() or b"{}")
+                    if not isinstance(body, dict):
+                        raise ValueError("Expected a JSON object")
+                else:
+                    body = {k: v[0] for k, v in parse_qs(url.query).items()}
                 self.send(200, getattr(app, name)(body))
             except (hs.ControlError, argparse.ArgumentTypeError, ValueError, KeyError) as e:
                 self.send(400, {"error": str(e)})
@@ -411,7 +520,7 @@ def main():
     if password and len(password) < 12:
         raise SystemExit("UI_PASSWORD must be at least 12 characters.")
     try:
-        app = App()
+        app = App(env("FAVORITES_FILE", "favorites.json"))
     except hs.ControlError as e:
         raise SystemExit(str(e))
     guard = Guard(password, load_secret(env("UI_SECRET_FILE", ".ui_secret")))

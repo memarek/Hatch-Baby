@@ -56,11 +56,11 @@ python hatch_ui.py
 Open <http://127.0.0.1:8888> and tap **Connect Spotify** once.
 
 From the page you can:
-- paste a playlist link (recent ones are saved as one-tap buttons)
-- pick the nursery speaker
-- choose the nightlight color and brightness
+- save playlists and albums from Spotify links (shared by everyone who uses the page)
+- pick tonight's music, the nursery speaker and the nightlight color, then tap **Start bedtime**
 - control playback and volume
-- stop Spotify without touching the Hatch
+
+Add it to your phone's home screen and it opens full screen with its own icon.
 
 The page is dark so it won't light up the room. By default only this computer
 can open it. To use it from your phone on home Wi-Fi, set `UI_PASSWORD` in

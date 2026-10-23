@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262f63"/>
+      <stop offset="1" stop-color="#0c0f22"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffb86b" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#ffb86b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="moon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd59e"/>
+      <stop offset="1" stop-color="#ffa14a"/>
+    </linearGradient>
+    <mask id="crescent">
+      <rect width="512" height="512" fill="#fff"/>
+      <circle cx="318" cy="214" r="112" fill="#000"/>
+    </mask>
+  </defs>
+  <rect width="512" height="512" fill="url(#sky)"/>
+  <circle cx="246" cy="270" r="200" fill="url(#glow)"/>
+  <circle cx="246" cy="270" r="124" fill="url(#moon)" mask="url(#crescent)"/>
+  <g fill="#fff">
+    <circle cx="372" cy="330" r="7" opacity="0.9"/>
+    <circle cx="150" cy="132" r="5" opacity="0.7"/>
+    <circle cx="398" cy="126" r="4" opacity="0.6"/>
+    <circle cx="118" cy="372" r="4" opacity="0.5"/>
+    <path d="M356 168 l6 16 16 6 -16 6 -6 16 -6 -16 -16 -6 16 -6z" opacity="0.95"/>
+  </g>
+</svg>

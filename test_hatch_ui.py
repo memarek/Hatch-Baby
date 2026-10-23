@@ -227,3 +227,111 @@ class ServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FeatureTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        with mock.patch.object(hs, "spotify_auth", FakeAuth):
+            self.app = hatch_ui.App(os.path.join(self.tmp.name, "favorites.json"))
+        self.sp = mock.MagicMock()
+        self.sp.playlist.return_value = {
+            "name": "Lullabies", "owner": {"display_name": "Spotify"},
+            "images": [{"url": "https://i.scdn.co/big"}, {"url": "https://i.scdn.co/mid"}],
+        }
+        self.app.sp = lambda: self.sp
+        guard = hatch_ui.Guard(PASSWORD, b"k" * 32)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), hatch_ui.make_handler(self.app, guard))
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.session = guard.make_session()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def request(self, method, path, body=None, logged_in=True):
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
+        headers = {"Content-Type": "application/json"} if body is not None else {}
+        if logged_in:
+            headers["Cookie"] = f"{hatch_ui.SESSION_COOKIE}={self.session}"
+        conn.request(method, path, body=body, headers=headers)
+        res = conn.getresponse()
+        res.body = res.read()
+        conn.close()
+        return res
+
+    def test_app_icon_and_manifest_are_public(self):
+        for path, ctype in (("/manifest.webmanifest", "application/manifest+json"),
+                            ("/icon-180.png", "image/png"), ("/icon.svg", "image/svg+xml")):
+            res = self.request("GET", path, logged_in=False)
+            self.assertEqual(res.status, 200, path)
+            self.assertEqual(res.getheader("Content-Type"), ctype)
+        # nothing else is
+        self.assertEqual(self.request("GET", "/api/state", logged_in=False).status, 401)
+        self.assertEqual(self.request("GET", "/ui/../.env", logged_in=False).status, 303)
+
+    def test_csp_allows_manifest_and_spotify_images(self):
+        csp = self.request("GET", "/").getheader("Content-Security-Policy")
+        self.assertIn("manifest-src 'self'", csp)
+        self.assertIn("https://*.spotifycdn.com", csp)
+
+    def test_favorites_are_shared_and_described(self):
+        res = self.request("POST", "/api/favorites", json.dumps({"uri": "https://open.spotify.com/playlist/abc?si=1"}))
+        self.assertEqual(res.status, 200)
+        self.sp.playlist.assert_called_with("abc", fields="name,images,owner(display_name)")
+        self.app.spotify_authed = lambda: False
+        favorites = json.loads(self.request("GET", "/api/state").body)["favorites"]
+        self.assertEqual(favorites, [{"uri": "spotify:playlist:abc", "name": "Lullabies",
+                                      "subtitle": "Playlist · Spotify", "image": "https://i.scdn.co/mid"}])
+        # re-adding moves it to the front without duplicating
+        self.sp.album.return_value = {"name": "Album", "artists": [{"name": "A"}], "images": []}
+        self.request("POST", "/api/favorites", json.dumps({"uri": "spotify:album:xyz"}))
+        self.request("POST", "/api/favorites", json.dumps({"uri": "spotify:playlist:abc"}))
+        self.assertEqual([f["uri"] for f in self.app.load_favorites()], ["spotify:playlist:abc", "spotify:album:xyz"])
+        self.request("POST", "/api/favorites/remove", json.dumps({"uri": "spotify:album:xyz"}))
+        self.assertEqual([f["uri"] for f in self.app.load_favorites()], ["spotify:playlist:abc"])
+
+    def test_bad_spotify_link_is_a_clear_error(self):
+        self.sp.playlist.side_effect = RuntimeError("404")
+        res = self.request("POST", "/api/favorites", json.dumps({"uri": "spotify:playlist:missing"}))
+        self.assertEqual(res.status, 400)
+        self.assertIn(b"Couldn't find that on Spotify", res.body)
+
+    def test_json_body_must_be_an_object(self):
+        self.assertEqual(self.request("POST", "/api/favorites", "[1, 2]").status, 400)
+
+    def test_hatch_list_is_cached(self):
+        calls = []
+        with mock.patch.object(hatch_ui, "run_hatch", lambda action: calls.append(1) or []):
+            self.request("GET", "/api/hatches")
+            self.request("GET", "/api/hatches")
+            self.assertEqual(len(calls), 1)
+            self.request("GET", "/api/hatches?refresh=1")
+            self.assertEqual(len(calls), 2)
+
+    def test_play_returns_before_hatch_finishes(self):
+        release = threading.Event()
+        self.sp.devices.return_value = {"devices": [{"id": "e1", "name": "Echo"}]}
+        with mock.patch.object(hatch_ui, "run_hatch", lambda action: release.wait(5)):
+            res = self.request("POST", "/api/play", json.dumps({"uri": "spotify:playlist:abc", "speaker": "e1"}))
+            self.assertEqual(res.status, 200)
+            self.assertTrue(self.app.hatch_job["busy"])
+            release.set()
+            for _ in range(50):
+                if not self.app.hatch_job["busy"]:
+                    break
+                time.sleep(0.02)
+        self.assertEqual((self.app.hatch_job["ok"], self.app.hatch_job["message"]), (True, "Nightlight on"))
+
+    def test_hatch_failure_is_reported_without_internals(self):
+        def fail(action):
+            raise RuntimeError("socket details")
+        with mock.patch.object(hatch_ui, "run_hatch", fail), mock.patch("traceback.print_exc"):
+            self.request("POST", "/api/hatch-off", "{}")
+            for _ in range(50):
+                if not self.app.hatch_job["busy"]:
+                    break
+                time.sleep(0.02)
+        self.assertFalse(self.app.hatch_job["ok"])
+        self.assertNotIn("socket", self.app.hatch_job["message"])
