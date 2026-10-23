@@ -255,6 +255,9 @@ ROUTES = {
 
 def make_handler(app, guard, secure_cookies=False, public_url=None):
     public_host = urlparse(public_url).netloc if public_url else None
+    headers_to_send = dict(SECURITY_HEADERS)
+    if secure_cookies:  # served over HTTPS: tell browsers never to use plain HTTP
+        headers_to_send["Strict-Transport-Security"] = "max-age=31536000"
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "Bedtime"
@@ -268,7 +271,7 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
-            for name, value in {**SECURITY_HEADERS, **(headers or {})}.items():
+            for name, value in {**headers_to_send, **(headers or {})}.items():
                 self.send_header(name, value)
             self.end_headers()
             self.wfile.write(data)
@@ -280,7 +283,7 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
         def redirect(self, location, headers=None):
             self.send_response(303)
             self.send_header("Location", location)
-            for name, value in {**SECURITY_HEADERS, **(headers or {})}.items():
+            for name, value in {**headers_to_send, **(headers or {})}.items():
                 self.send_header(name, value)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -301,13 +304,16 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
             origin = self.headers.get("Origin")
             if origin is None:
                 return True  # not sent by a browser making a cross-site request
-            allowed = {self.headers.get("Host"), self.headers.get("X-Forwarded-Host"), public_host}
+            allowed = {self.headers.get("Host"), public_host}
             return urlparse(origin).netloc in allowed - {None}
 
         def read_body(self):
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY_BYTES:
-                raise hs.ControlError("Request too large")
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise hs.ControlError("Bad request")
+            if length < 0 or length > MAX_BODY_BYTES:
+                raise hs.ControlError("Bad request size")
             return self.rfile.read(length)
 
         def client(self):
@@ -341,7 +347,10 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
             if guard.enabled:
                 if url.path == "/login":
                     if method == "POST":
-                        return self.login()
+                        try:
+                            return self.login()
+                        except hs.ControlError as e:
+                            return self.send(400, {"error": str(e)})
                     return self.send_page("login.html")
                 if url.path == "/logout" and method == "POST":
                     return self.redirect("/login", self.session_cookie("", 0))

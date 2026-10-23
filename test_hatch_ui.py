@@ -24,6 +24,32 @@ class FakeAuth:
     def get_access_token(self, code, as_dict=True, check_cache=True): self.exchanged.append(code)
 
 
+class HttpsHeaderTests(unittest.TestCase):
+    def test_hsts_and_public_origin_when_served_over_https(self):
+        with mock.patch.object(hs, "spotify_auth", FakeAuth):
+            app = hatch_ui.App()
+        app.pause = mock.Mock(return_value={"ok": True})
+        guard = hatch_ui.Guard("", b"k" * 32)
+        handler = hatch_ui.make_handler(app, guard, True, "https://bedtime.example.ts.net")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            def request(method, path, body=None, headers=None):
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+                conn.request(method, path, body, headers or {})
+                res = conn.getresponse()
+                res.read()
+                conn.close()
+                return res
+            self.assertEqual(request("GET", "/").getheader("Strict-Transport-Security"), "max-age=31536000")
+            ok = request("POST", "/api/stop", "{}", {"Content-Type": "application/json",
+                                                       "Origin": "https://bedtime.example.ts.net"})
+            self.assertEqual(ok.status, 200)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 class GuardTests(unittest.TestCase):
     def setUp(self):
         self.guard = hatch_ui.Guard(PASSWORD, b"k" * 32)
@@ -166,6 +192,31 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.app.auth.exchanged, ["abc"])
         # each state works only once
         self.assertEqual(self.request("GET", f"/callback?code=abc&state={state}").status, 400)
+
+    def test_rejects_bad_body_sizes(self):
+        for size in ("-1", "abc"):
+            for path, ctype in (("/api/stop", "application/json"), ("/login", "application/x-www-form-urlencoded")):
+                conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+                conn.putrequest("POST", path)
+                conn.putheader("Content-Type", ctype)
+                conn.putheader("Content-Length", size)
+                conn.putheader("Cookie", f"{hatch_ui.SESSION_COOKIE}={self.session}")
+                conn.endheaders()
+                res = conn.getresponse()
+                res.read()
+                conn.close()
+                self.assertEqual(res.status, 400, (size, path))
+
+    def test_forwarded_host_not_trusted_for_origin(self):
+        res = self.request("POST", "/api/stop", "{}", {
+            "Content-Type": "application/json",
+            "Origin": "https://evil.example",
+            "X-Forwarded-Host": "evil.example",
+        })
+        self.assertEqual(res.status, 403)
+
+    def test_no_hsts_without_https(self):
+        self.assertIsNone(self.request("GET", "/").getheader("Strict-Transport-Security"))
 
     def test_errors_hide_internals(self):
         with mock.patch.object(self.app, "volume", side_effect=RuntimeError("secret detail")):
