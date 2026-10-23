@@ -25,6 +25,7 @@ import asyncio
 import os
 import re
 import sys
+import time
 
 DEFAULT_SPOTIFY_SCOPE = "user-read-playback-state user-modify-playback-state"
 MQTT_FLUSH_SECONDS = 2
@@ -212,6 +213,51 @@ def hatch_nightlight(device, rgb, brightness):
         print(f"Hatch '{device.device_name}': light #{r:02x}{g:02x}{b:02x} at {brightness}%, no Hatch sound")
     else:
         print(f"Hatch '{device.device_name}' ({kind}) has no light; Hatch sound stopped")
+
+
+def wait_for_hatch_state(device, seconds=4):
+    """Give the device's current state a moment to arrive from Hatch's cloud."""
+    deadline = time.time() + seconds
+    while not getattr(device, "is_online", True) and time.time() < deadline:
+        time.sleep(0.2)
+
+
+def hatch_snapshot(device):
+    """What the Hatch is doing right now: sound, volume and light, as plain data."""
+    kind = type(device).__name__
+    playing = bool(getattr(device, "is_playing", False))
+    sound = routine = None
+    track = getattr(device, "audio_track", None)
+    if kind not in ("RestPlus", "RestMini"):
+        if getattr(device, "current_playing", None) == "routine":
+            favorites = getattr(device, "favorites", None) or []
+            match = next((f for f in favorites if f.get("id") == getattr(device, "current_id", None)), None)
+            routine = (match or {}).get("name") or "A Hatch favorite"
+        if playing:
+            info = (getattr(device, "sounds_by_id", None) or {}).get(getattr(device, "sound_id", None)) or {}
+            sound = info.get("title")
+    if playing and not sound:
+        # Enum names like PinkNoise -> "Pink Noise"
+        sound = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", track.name) if track is not None else "A Hatch sound"
+
+    has_light = hasattr(device, "set_color")
+    if kind == "RestPlus":
+        light_on = bool(getattr(device, "is_on", False) and getattr(device, "brightness", 0))
+    else:
+        light_on = bool(getattr(device, "is_light_on", False))
+    rgb = tuple(int(getattr(device, c, 0) or 0) for c in ("red", "green", "blue"))
+    return {
+        "name": device.device_name,
+        "online": bool(getattr(device, "is_online", True)),
+        "playing": playing,
+        "sound": sound,
+        "routine": routine,
+        "volume": getattr(device, "volume", None),
+        "has_light": has_light,
+        "light_on": has_light and light_on,
+        "color": "#%02x%02x%02x" % rgb if light_on else None,
+        "brightness": getattr(device, "brightness", None) if light_on else None,
+    }
 
 
 def hatch_off(device):

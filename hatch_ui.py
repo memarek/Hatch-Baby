@@ -53,6 +53,7 @@ STATIC_FILES = {
 }
 MAX_FAVORITES = 30
 HATCH_CACHE_SECONDS = 10 * 60
+HATCH_STATUS_SECONDS = 30
 
 MODEL_NAMES = {
     "RestMini": "Rest Mini",
@@ -149,6 +150,7 @@ class App:
         self.favorites_path = favorites_path
         self.favorites_lock = threading.Lock()
         self.hatch_cache = (0, None)  # (fetched at, device list)
+        self.status_cache = {}  # Hatch name -> (fetched at, snapshot)
         # Hatch commands take several seconds, so they run in the background and
         # the page polls this to show progress.
         self.hatch_job = {"busy": False, "ok": None, "message": "", "at": 0}
@@ -159,6 +161,7 @@ class App:
         def work():
             try:
                 run_hatch(action)
+                self.status_cache.clear()  # what's playing just changed
                 self.hatch_job = {"busy": False, "ok": True, "message": done_message, "at": time.time()}
             except Exception as e:
                 if not isinstance(e, hs.ControlError):
@@ -268,6 +271,19 @@ class App:
             self.hatch_cache = (time.time(), devices)
         return devices
 
+    def hatch_status(self, query):
+        name = query.get("hatch") or ""
+        fetched_at, snapshot = self.status_cache.get(name, (0, None))
+        if snapshot is None or query.get("refresh") or time.time() - fetched_at > HATCH_STATUS_SECONDS:
+            def read(ds):
+                device = hs.find_hatch_device(ds, name or None)
+                hs.wait_for_hatch_state(device)
+                return hs.hatch_snapshot(device)
+            snapshot = run_hatch(read)
+            fetched_at = time.time()
+            self.status_cache[name] = (fetched_at, snapshot)
+        return {**snapshot, "checked_at": fetched_at}
+
     def add_favorite(self, body):
         uri = hs.to_spotify_uri((body.get("uri") or "").strip())
         info = self.describe(uri)
@@ -340,6 +356,7 @@ class App:
 ROUTES = {
     ("GET", "/api/state"): "state",
     ("GET", "/api/hatches"): "hatches",
+    ("GET", "/api/hatch-status"): "hatch_status",
     ("POST", "/api/play"): "play",
     ("POST", "/api/stop"): "pause",
     ("POST", "/api/resume"): "resume",

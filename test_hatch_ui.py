@@ -335,3 +335,21 @@ class FeatureTests(unittest.TestCase):
                 time.sleep(0.02)
         self.assertFalse(self.app.hatch_job["ok"])
         self.assertNotIn("socket", self.app.hatch_job["message"])
+
+    def test_hatch_status_is_cached_and_cleared_by_changes(self):
+        calls = []
+        snapshot = {"name": "Nursery", "playing": True, "sound": "Dryer"}
+        with mock.patch.object(hatch_ui, "run_hatch", lambda action: calls.append(1) or snapshot):
+            first = json.loads(self.request("GET", "/api/hatch-status").body)
+            self.assertEqual((first["sound"], len(calls)), ("Dryer", 1))
+            self.assertIn("checked_at", first)
+            self.request("GET", "/api/hatch-status")
+            self.assertEqual(len(calls), 1)
+            self.request("GET", "/api/hatch-status?refresh=1")
+            self.assertEqual(len(calls), 2)
+            self.request("POST", "/api/hatch-off", "{}")
+            for _ in range(50):
+                if not self.app.hatch_job["busy"]:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(self.app.status_cache, {})

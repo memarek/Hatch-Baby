@@ -130,6 +130,58 @@ class HatchTests(unittest.TestCase):
             hs.find_hatch_device(ds, "garage")
 
 
+class SnapshotTests(unittest.TestCase):
+    def rest_iot(self, **state):
+        d = FakeRestIot()
+        d.is_online, d.current_playing, d.current_id = True, "remote", 0
+        d.sound_id, d.audio_track, d.volume = hs.NO_SOUND_ID, None, 0
+        d.is_light_on, d.red, d.green, d.blue, d.brightness = False, 0, 0, 0, 0
+        d.sounds_by_id = {10127: {"id": 10127, "title": "Dryer"}}
+        d.favorites = [{"id": 7, "name": "Bedtime", "active": True}]
+        for k, v in state.items():
+            setattr(d, k, v)
+        return d
+
+    def test_newer_model_names_the_sound(self):
+        d = self.rest_iot(is_playing=True, sound_id=10127, volume=40)
+        snap = hs.hatch_snapshot(d)
+        self.assertEqual((snap["playing"], snap["sound"], snap["volume"]), (True, "Dryer", 40))
+        self.assertFalse(snap["light_on"])
+        self.assertIsNone(snap["color"])
+
+    def test_light_color_and_brightness(self):
+        d = self.rest_iot(is_light_on=True, red=255, green=106, blue=0, brightness=20)
+        snap = hs.hatch_snapshot(d)
+        self.assertEqual((snap["light_on"], snap["color"], snap["brightness"]), (True, "#ff6a00", 20))
+        self.assertFalse(snap["playing"])
+        self.assertIsNone(snap["sound"])
+
+    def test_running_favorite(self):
+        d = self.rest_iot(current_playing="routine", current_id=7, is_playing=True, sound_id=10127)
+        self.assertEqual(hs.hatch_snapshot(d)["routine"], "Bedtime")
+
+    def test_unknown_sound_falls_back_to_track_name(self):
+        from hatch_rest_api import RIoTAudioTrack
+        d = self.rest_iot(is_playing=True, sound_id=1, audio_track=RIoTAudioTrack.BrownNoise)
+        self.assertEqual(hs.hatch_snapshot(d)["sound"], "Brown Noise")
+
+    def test_rest_plus(self):
+        from hatch_rest_api import RestPlusAudioTrack
+        d = RestPlus()
+        d.is_on, d.is_playing, d.is_online = True, True, True
+        d.audio_track, d.volume = RestPlusAudioTrack.PinkNoise, 55
+        d.red, d.green, d.blue, d.brightness = 0, 0, 255, 30
+        snap = hs.hatch_snapshot(d)
+        self.assertEqual((snap["sound"], snap["volume"], snap["light_on"], snap["color"]),
+                         ("Pink Noise", 55, True, "#0000ff"))
+
+    def test_waits_for_state_to_arrive(self):
+        d = self.rest_iot(is_online=False)
+        with mock.patch.object(hs.time, "sleep", side_effect=lambda _: setattr(d, "is_online", True)) as sleep:
+            hs.wait_for_hatch_state(d)
+        self.assertEqual(sleep.call_count, 1)
+
+
 class CliTests(unittest.TestCase):
     def test_play_args(self):
         args = hs.build_parser().parse_args(
