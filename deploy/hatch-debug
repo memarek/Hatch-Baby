@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run a hatch_spotify.py command on the server as the Bedtime service user,
+# with its settings. Used for investigating the Hatch, e.g.:
+#   sudo ./deploy/hatch-debug hatch-inspect
+#   sudo ./deploy/hatch-debug hatch-probe https://example.com/song.mp3 --id 10127
+set -euo pipefail
+[ "$(id -u)" -eq 0 ] || { echo "Run with sudo"; exit 1; }
+cd /var/lib/bedtime
+exec runuser -u bedtime -- /opt/bedtime/venv/bin/python /opt/bedtime/hatch_spotify.py "$@"

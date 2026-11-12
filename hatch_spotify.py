@@ -22,6 +22,7 @@ Configuration comes from environment variables (or a .env file); see
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import sys
@@ -398,6 +399,122 @@ def cmd_check_hatch(args):
         raise ControlError(f"Hatch login failed: {e}")
 
 
+# --------------------------------------------------------------------------
+# Hatch investigation tools: what the device reports, and how it answers
+# experimental commands. Each run logs in once, so leave a minute between runs.
+# --------------------------------------------------------------------------
+
+def probe_payload(url, sound_id=None, volume=None):
+    """The "play this audio" command, optionally with a sound id and volume."""
+    sound = {"mute": False, "url": url, "duration": 0, "until": "indefinite"}
+    if sound_id is not None:
+        sound["id"] = sound_id
+    if volume is not None:
+        from hatch_rest_api.util import convert_from_percentage
+
+        sound["v"] = convert_from_percentage(volume)
+    return {"current": {"playing": "remote", "step": 0, "sound": sound}}
+
+
+def capture_shadow(device, seconds=6):
+    """The device's full shadow: what it was asked (desired), what it says it
+    is doing (reported), and what it has not done yet (delta)."""
+    captured = []
+    original = device._on_get_shadow_accepted
+    had_own = "_on_get_shadow_accepted" in vars(device)
+
+    def capture(response):
+        captured.append(response)
+        original(response)
+
+    device._on_get_shadow_accepted = capture
+    try:
+        device.refresh()
+        deadline = time.time() + seconds
+        while not captured and time.time() < deadline:
+            time.sleep(0.2)
+    finally:
+        if had_own:
+            device._on_get_shadow_accepted = original
+        else:
+            del device._on_get_shadow_accepted  # back to the class's own method
+    if not captured:
+        return None
+    state = captured[-1].state
+    return {
+        "version": captured[-1].version,
+        "desired": getattr(state, "desired", None),
+        "reported": getattr(state, "reported", None),
+        "delta": getattr(state, "delta", None),
+    }
+
+
+def watch_rejections(device):
+    """Collect any errors Hatch's cloud sends back for our commands."""
+    from awscrt import mqtt
+    from awsiot import iotshadow
+
+    errors = []
+    future, _ = device.shadow_client.subscribe_to_update_shadow_rejected(
+        request=iotshadow.UpdateShadowSubscriptionRequest(thing_name=device.thing_name),
+        qos=mqtt.QoS.AT_LEAST_ONCE,
+        callback=lambda error: errors.append({"code": error.code, "message": error.message}),
+    )
+    future.result(timeout=10)
+    return errors
+
+
+def _mask(value):
+    value = str(value or "")
+    return value[:4] + "…" + value[-2:] if len(value) > 8 else value
+
+
+def describe_sounds(device, limit=5):
+    """How Hatch's own sounds are addressed: ids, titles and audio hosts."""
+    sounds = getattr(device, "sounds", None) or []
+    hosts = sorted({re.sub(r"^https?://([^/]+).*", r"\1", s.get("wavUrl") or s.get("mp3Url") or "")
+                    for s in sounds if s.get("wavUrl") or s.get("mp3Url")})
+    sample = [{"id": s.get("id"), "title": s.get("title"), "tier": s.get("tier"),
+               "url": s.get("wavUrl") or s.get("mp3Url")} for s in sounds[:limit]]
+    return {"count": len(sounds), "audio_hosts": hosts, "sample": sample}
+
+
+def cmd_hatch_inspect(args):
+    def inspect(devices):
+        device = find_hatch_device(devices, args.hatch)
+        wait_for_hatch_state(device)
+        return {
+            "name": device.device_name,
+            "model": type(device).__name__,
+            "firmware": getattr(device, "firmware_version", None),
+            "thing": _mask(getattr(device, "thing_name", "")),
+            "shadow": capture_shadow(device),
+            "sounds": describe_sounds(device),
+        }
+
+    print(json.dumps(asyncio.run(with_hatch(inspect)), indent=2, default=str))
+
+
+def cmd_hatch_probe(args):
+    def probe(devices):
+        device = find_hatch_device(devices, args.hatch)
+        wait_for_hatch_state(device)
+        errors = watch_rejections(device)
+        payload = probe_payload(args.url, args.id, args.volume if args.volume is not None else getattr(device, "volume", None))
+        device._update(payload)
+        time.sleep(args.wait)
+        shadow = capture_shadow(device) or {}
+        current = lambda part: ((shadow.get(part) or {}).get("current") or {})
+        return {
+            "sent": payload,
+            "rejected_by_cloud": errors,
+            "reported_now": {"playing": current("reported").get("playing"), "sound": current("reported").get("sound")},
+            "still_pending (delta)": shadow.get("delta"),
+        }
+
+    print(json.dumps(asyncio.run(with_hatch(probe)), indent=2, default=str))
+
+
 def cmd_check_spotify(args):
     from spotipy.cache_handler import MemoryCacheHandler
     from spotipy.oauth2 import SpotifyClientCredentials
@@ -454,6 +571,18 @@ def build_parser():
 
     p = sub.add_parser("check-spotify", help="test the Spotify app ID/secret in .env")
     p.set_defaults(func=cmd_check_spotify)
+
+    p = sub.add_parser("hatch-inspect", help="show what the Hatch reports about itself (investigation)")
+    p.add_argument("--hatch", default=env("HATCH_DEVICE"))
+    p.set_defaults(func=cmd_hatch_inspect)
+
+    p = sub.add_parser("hatch-probe", help="send an experimental play-audio command and show the answer")
+    p.add_argument("url", help="audio address to try")
+    p.add_argument("--id", type=int, help="sound id to send with it")
+    p.add_argument("--volume", type=int, help="volume 0-100 (default: the Hatch's current volume)")
+    p.add_argument("--wait", type=float, default=10, help="seconds to wait before reading the answer")
+    p.add_argument("--hatch", default=env("HATCH_DEVICE"))
+    p.set_defaults(func=cmd_hatch_probe)
 
     p = sub.add_parser("play", help="play Spotify and put the Hatch in nightlight mode")
     p.add_argument("uri", nargs="?", type=to_spotify_uri, default=env("SPOTIFY_DEFAULT_URI"),

@@ -267,6 +267,57 @@ class HatchControlTests(unittest.TestCase):
             hs.hatch_set_volume(d, 101)
 
 
+class InvestigationTests(unittest.TestCase):
+    def test_probe_payload(self):
+        self.assertEqual(hs.probe_payload("https://x/a.mp3"), {"current": {"playing": "remote", "step": 0, "sound": {
+            "mute": False, "url": "https://x/a.mp3", "duration": 0, "until": "indefinite"}}})
+        sound = hs.probe_payload("https://x/a.mp3", sound_id=10127, volume=100)["current"]["sound"]
+        self.assertEqual((sound["id"], sound["v"]), (10127, 65535))
+
+    def test_capture_shadow_returns_desired_reported_delta(self):
+        class Device:
+            def _on_get_shadow_accepted(self, response):
+                self.seen = response
+
+            def refresh(self):
+                state = mock.Mock(desired={"current": {"sound": {"url": "u"}}},
+                                  reported={"current": {"playing": "none"}},
+                                  delta={"current": {"sound": {"url": "u"}}})
+                self._on_get_shadow_accepted(mock.Mock(version=7, state=state))
+
+        d = Device()
+        shadow = hs.capture_shadow(d)
+        self.assertEqual(shadow["version"], 7)
+        self.assertEqual(shadow["delta"], {"current": {"sound": {"url": "u"}}})
+        self.assertEqual(shadow["reported"], {"current": {"playing": "none"}})
+        self.assertEqual(d.seen.version, 7)  # the library still got its update
+        self.assertNotIn("_on_get_shadow_accepted", vars(d))  # and our hook was removed
+
+    def test_capture_shadow_times_out_quietly(self):
+        d = mock.Mock(spec=["_on_get_shadow_accepted", "refresh"])
+        with mock.patch.object(hs.time, "sleep"):
+            self.assertIsNone(hs.capture_shadow(d, seconds=0))
+
+    def test_describe_sounds(self):
+        d = mock.Mock(sounds=[
+            {"id": 1, "title": "Dryer", "tier": "free", "wavUrl": "https://cdn.example.com/a.wav"},
+            {"id": 2, "title": "Rain", "mp3Url": "https://other.example.net/b.mp3"},
+            {"id": 3, "title": "No audio"},
+        ])
+        info = hs.describe_sounds(d)
+        self.assertEqual(info["count"], 3)
+        self.assertEqual(info["audio_hosts"], ["cdn.example.com", "other.example.net"])
+        self.assertEqual(info["sample"][0], {"id": 1, "title": "Dryer", "tier": "free", "url": "https://cdn.example.com/a.wav"})
+
+    def test_mask(self):
+        self.assertEqual(hs._mask("abcdef123456"), "abcd…56")
+        self.assertEqual(hs._mask("short"), "short")
+
+    def test_probe_cli_args(self):
+        args = hs.build_parser().parse_args(["hatch-probe", "https://x/a.mp3", "--id", "10127", "--wait", "5"])
+        self.assertEqual((args.url, args.id, args.wait), ("https://x/a.mp3", 10127, 5))
+
+
 class CliTests(unittest.TestCase):
     def test_play_args(self):
         args = hs.build_parser().parse_args(

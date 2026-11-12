@@ -133,6 +133,21 @@ incoming port closed. If you ever lose Tailscale access, use the VM's
 cd Hatch-Baby && git pull && sudo ./deploy/setup.sh
 ```
 
+## Investigating the Hatch
+
+Two tools show what the Hatch reports and how it answers experimental
+commands. Each run logs in to Hatch once, so leave a minute between runs:
+
+```bash
+sudo ./deploy/hatch-debug hatch-inspect
+sudo ./deploy/hatch-debug hatch-probe <audio-url> [--id <sound id>]
+```
+
+`hatch-inspect` prints the model, firmware, the device's full state (what it
+was asked, what it reports, what it hasn't done yet) and how Hatch's own
+sounds are addressed. `hatch-probe` sends a "play this audio" command and
+reports whether Hatch's cloud rejected it and what the device did with it.
+
 ## Troubleshooting
 
 ```bash
