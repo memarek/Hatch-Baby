@@ -479,6 +479,37 @@ def describe_sounds(device, limit=5):
     return {"count": len(sounds), "audio_hosts": hosts, "sample": sample}
 
 
+def parse_wav_header(data):
+    """Audio format from the first bytes of a WAV file, or what kind of file it is."""
+    import struct
+
+    if data[:3] == b"ID3" or data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return {"type": "mp3"}
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return {"type": "unknown", "first_bytes": data[:16].hex()}
+    pos = 12
+    while pos + 8 <= len(data):
+        chunk, size = data[pos:pos + 4], struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        if chunk == b"fmt " and pos + 24 <= len(data):
+            fmt, channels, rate, byte_rate, align, bits = struct.unpack("<HHIIHH", data[pos + 8:pos + 24])
+            return {"type": "wav", "format": {1: "PCM", 3: "float", 0xFFFE: "extensible"}.get(fmt, fmt),
+                    "channels": channels, "sample_rate": rate, "bits": bits}
+        pos += 8 + size + (size & 1)
+    return {"type": "wav", "format": "unknown (fmt chunk not in first bytes)"}
+
+
+def cmd_wav_info(args):
+    from urllib.request import Request, urlopen
+
+    req = Request(args.url, headers={"Range": "bytes=0-4095", "User-Agent": "bedtime"})
+    with urlopen(req, timeout=20) as res:
+        info = parse_wav_header(res.read(4096))
+        info["content_type"] = res.headers.get("Content-Type")
+        size = res.headers.get("Content-Range", "").rpartition("/")[2] or res.headers.get("Content-Length")
+        info["file_bytes"] = int(size) if size and size.isdigit() else None
+    print(json.dumps(info, indent=2))
+
+
 def cmd_hatch_inspect(args):
     def inspect(devices):
         device = find_hatch_device(devices, args.hatch)
@@ -504,11 +535,20 @@ def cmd_hatch_probe(args):
         device._update(payload)
         time.sleep(args.wait)
         shadow = capture_shadow(device) or {}
-        current = lambda part: ((shadow.get(part) or {}).get("current") or {})
+        reported = shadow.get("reported") or {}
+        current = reported.get("current") or {}
         return {
             "sent": payload,
             "rejected_by_cloud": errors,
-            "reported_now": {"playing": current("reported").get("playing"), "sound": current("reported").get("sound")},
+            "reported_now": {
+                "playing": current.get("playing"),
+                "paused": current.get("paused"),
+                "sound": current.get("sound"),
+                "trackDuration": current.get("trackDuration"),
+                "apparentStartTime": current.get("apparentStartTime"),
+                "last_download (LDR)": reported.get("LDR"),
+                "streaming": reported.get("streaming"),
+            },
             "still_pending (delta)": shadow.get("delta"),
         }
 
@@ -575,6 +615,10 @@ def build_parser():
     p = sub.add_parser("hatch-inspect", help="show what the Hatch reports about itself (investigation)")
     p.add_argument("--hatch", default=env("HATCH_DEVICE"))
     p.set_defaults(func=cmd_hatch_inspect)
+
+    p = sub.add_parser("wav-info", help="show the audio format of a sound file at a URL")
+    p.add_argument("url")
+    p.set_defaults(func=cmd_wav_info)
 
     p = sub.add_parser("hatch-probe", help="send an experimental play-audio command and show the answer")
     p.add_argument("url", help="audio address to try")

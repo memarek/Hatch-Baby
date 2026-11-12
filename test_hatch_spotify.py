@@ -309,6 +309,16 @@ class InvestigationTests(unittest.TestCase):
         self.assertEqual(info["audio_hosts"], ["cdn.example.com", "other.example.net"])
         self.assertEqual(info["sample"][0], {"id": 1, "title": "Dryer", "tier": "free", "url": "https://cdn.example.com/a.wav"})
 
+    def test_parse_wav_header(self):
+        import io, wave
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050); w.writeframes(b"\0\0" * 10)
+        self.assertEqual(hs.parse_wav_header(buf.getvalue()),
+                         {"type": "wav", "format": "PCM", "channels": 1, "sample_rate": 22050, "bits": 16})
+        self.assertEqual(hs.parse_wav_header(b"ID3\x04" + b"\0" * 20), {"type": "mp3"})
+        self.assertEqual(hs.parse_wav_header(b"<html>")["type"], "unknown")
+
     def test_mask(self):
         self.assertEqual(hs._mask("abcdef123456"), "abcd…56")
         self.assertEqual(hs._mask("short"), "short")
