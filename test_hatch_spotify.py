@@ -84,6 +84,15 @@ class SpotifyDeviceTests(unittest.TestCase):
     def test_missing(self):
         self.assertIsNone(hs.find_spotify_device(self.devices, "garage"))
 
+    def test_speaker_refusing_volume_still_starts(self):
+        sp = mock.Mock()
+        sp.devices.return_value = {"devices": self.devices}
+        sp.volume.side_effect = RuntimeError("403 VOLUME_CONTROL_DISALLOW")
+        sp.shuffle.side_effect = RuntimeError("403")
+        device = hs.start_spotify(sp, "spotify:playlist:p", "nursery", 25, True)
+        self.assertEqual(device["id"], "2")
+        sp.start_playback.assert_called_once()
+
     def test_start_playlist_vs_track(self):
         sp = mock.Mock()
         sp.devices.return_value = {"devices": self.devices}
@@ -213,6 +222,30 @@ class HatchControlTests(unittest.TestCase):
             hs.hatch_play_sound(d, 9)  # hidden
         with self.assertRaises(hs.ControlError):
             hs.hatch_play_sound(d, "nope")
+
+    def test_rest_baby_uses_its_own_sound_ids(self):
+        from hatch_rest_api import RestBabyAudioTrack
+
+        class RestBaby:
+            device_name = "My Hatch Baby"
+            sounds = [{"id": 10137, "title": "White Noise", "wavUrl": "old"}]  # older ids it ignores
+
+            def __init__(self):
+                self.calls = []
+
+            def set_audio_track(self, track):
+                self.calls.append(track)
+
+        d = RestBaby()
+        sounds = hs.hatch_sounds(d)
+        self.assertIn({"id": 10517, "title": "Dryer"}, sounds)
+        self.assertIn({"id": 10514, "title": "Pink Noise"}, sounds)
+        self.assertNotIn(10137, [s["id"] for s in sounds])
+        self.assertEqual(sounds, sorted(sounds, key=lambda s: s["title"]))
+        self.assertEqual(hs.hatch_play_sound(d, "10517"), "Dryer")
+        self.assertEqual(d.calls, [RestBabyAudioTrack.Dryer])
+        with self.assertRaises(hs.ControlError):
+            hs.hatch_play_sound(d, 10137)
 
     def test_play_sound_rest_plus_powers_on(self):
         d = RestPlus()

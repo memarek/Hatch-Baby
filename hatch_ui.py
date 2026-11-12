@@ -101,6 +101,7 @@ class HatchConnection:
         self.expires_at = 0
         self.retry_at = 0
         self.backoff = self.MIN_BACKOFF
+        self.link_up = False  # whether the live MQTT connection is currently up
 
     def _run(self, coro, timeout=90):
         if self.loop is None:
@@ -118,6 +119,8 @@ class HatchConnection:
             email=self.email or hs.require_env("HATCH_EMAIL"),
             password=self.password or hs.require_env("HATCH_PASSWORD"),
             client_session=self.session,
+            on_connection_interrupted=lambda *args, **kwargs: setattr(self, "link_up", False),
+            on_connection_resumed=lambda *args, **kwargs: setattr(self, "link_up", True),
         )
         return mqtt, devices, expiration
 
@@ -133,6 +136,14 @@ class HatchConnection:
             except Exception:
                 pass
         self.mqtt = self.devices = None
+        self.link_up = False
+
+    def _wait_before_retrying(self, now):
+        """Space out login attempts after a failure: 1, 2, 4 ... 30 minutes."""
+        wait = self.backoff
+        self.retry_at = now + wait
+        self.backoff = min(self.backoff * 2, self.MAX_BACKOFF)
+        return max(1, round(wait / 60))
 
     def connected_devices(self):
         now = time.time()
@@ -140,20 +151,27 @@ class HatchConnection:
             return self.devices
         if now < self.retry_at:
             minutes = max(1, round((self.retry_at - now) / 60))
-            raise hs.ControlError(f"Hatch asked us to slow down. Try again in {minutes} min.")
+            raise hs.ControlError(f"Can't reach the Hatch right now. Trying again in {minutes} min.")
         self._disconnect()
         try:
             mqtt, devices, expiration = self._run(self._login())
+        except hs.ControlError:
+            raise  # missing settings: retrying won't help, and it costs no login
         except Exception as e:
-            from hatch_rest_api import RateError
+            # Any failed login (rate limit, wrong password, network) waits before the
+            # next attempt; retrying on every request is what got us rate limited.
+            from hatch_rest_api import AuthError, RateError
 
+            minutes = self._wait_before_retrying(now)
             if isinstance(e, RateError):
-                self.retry_at = now + self.backoff
-                minutes = max(1, round(self.backoff / 60))
-                self.backoff = min(self.backoff * 2, self.MAX_BACKOFF)
                 raise hs.ControlError(f"Hatch asked us to slow down. Try again in {minutes} min.")
-            raise
+            if isinstance(e, AuthError):
+                raise hs.ControlError("Hatch didn't accept the email/password. Update them with "
+                                      f"setup.sh --reconfigure. Trying again in {minutes} min.")
+            traceback.print_exc()
+            raise hs.ControlError(f"Couldn't log in to Hatch. Trying again in {minutes} min.")
         self.backoff = self.MIN_BACKOFF
+        self.link_up = True
         self.mqtt, self.devices, self.expires_at = mqtt, devices, parse_expiration(expiration, now)
         for device in devices:
             hs.wait_for_hatch_state(device)
@@ -253,26 +271,38 @@ class App:
         self.login_enabled = False
         self.favorites_path = favorites_path
         self.settings_path = settings_path
-        self.favorites_lock = threading.Lock()
+        self.data_lock = threading.Lock()  # favorites.json and settings.json
         # Hatch commands take several seconds, so they run in the background and
         # the page polls this to show progress.
         self.hatch_job = {"busy": False, "ok": None, "message": "", "at": 0}
+        self.job_count = 0
+        self.job_lock = threading.Lock()
 
     def run_hatch_job(self, action, done_message, working_message="Talking to the Hatch…"):
-        """done_message may be a function of the action's result."""
-        self.hatch_job = {"busy": True, "ok": None, "message": working_message, "at": time.time()}
+        """done_message may be a function of the action's result.
+
+        Jobs run one at a time (the Hatch connection is locked), and only the
+        newest one reports: an older job finishing mustn't mark a newer one done.
+        """
+        with self.job_lock:
+            self.job_count += 1
+            job = self.job_count
+            self.hatch_job = {"busy": True, "ok": None, "message": working_message, "at": time.time()}
+
+        def report(ok, message):
+            with self.job_lock:
+                if job == self.job_count:
+                    self.hatch_job = {"busy": False, "ok": ok, "message": message, "at": time.time()}
 
         def work():
             try:
                 result = run_hatch(action)
                 time.sleep(1)  # let the Hatch confirm before the page re-reads its state
-                message = done_message(result) if callable(done_message) else done_message
-                self.hatch_job = {"busy": False, "ok": True, "message": message, "at": time.time()}
+                report(True, done_message(result) if callable(done_message) else done_message)
             except Exception as e:
                 if not isinstance(e, hs.ControlError):
                     traceback.print_exc()
-                message = str(e) if isinstance(e, hs.ControlError) else "Couldn't reach the Hatch. Try again."
-                self.hatch_job = {"busy": False, "ok": False, "message": message, "at": time.time()}
+                report(False, str(e) if isinstance(e, hs.ControlError) else "Couldn't reach the Hatch. Try again.")
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -285,7 +315,19 @@ class App:
             settings = {}
         return {"sleep_sound": settings.get("sleep_sound"), "bedtime_volume": settings.get("bedtime_volume")}
 
+    @staticmethod
+    def write_json(path, data):
+        """Write a file so readers never see it half-written."""
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+
     def update_settings(self, body):
+        with self.data_lock:  # read and write together, so two saves can't lose one
+            return self._update_settings(body)
+
+    def _update_settings(self, body):
         settings = self.load_settings()
         if "sleep_sound" in body:
             sound = body["sleep_sound"]
@@ -301,11 +343,7 @@ class App:
                 if not 0 <= volume <= 100:
                     raise hs.ControlError("Volume must be between 0 and 100.")
             settings["bedtime_volume"] = volume
-        with self.favorites_lock:
-            tmp = self.settings_path + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(settings, f)
-            os.replace(tmp, self.settings_path)
+        self.write_json(self.settings_path, settings)
         return {"ok": True, "settings": settings}
 
     def load_favorites(self):
@@ -317,10 +355,7 @@ class App:
             return []
 
     def save_favorites(self, favorites):
-        tmp = self.favorites_path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(favorites, f)
-        os.replace(tmp, self.favorites_path)
+        self.write_json(self.favorites_path, favorites)
 
     def describe(self, uri):
         """Name, subtitle and cover art for a Spotify URI, for the favorites list."""
@@ -437,19 +472,21 @@ class App:
             time.sleep(1.5)
         name = query.get("hatch") or None
         snapshot = run_hatch(lambda ds: hs.hatch_snapshot(hs.find_hatch_device(ds, name)))
-        return {**snapshot, "checked_at": time.time()}
+        # While our live connection is down the state below may be old: say so.
+        live = hatch_connection.link_up
+        return {**snapshot, "online": snapshot.get("online", True) and live, "checked_at": time.time()}
 
     def add_favorite(self, body):
         uri = hs.to_spotify_uri((body.get("uri") or "").strip())
         info = self.describe(uri)
-        with self.favorites_lock:
+        with self.data_lock:
             favorites = [f for f in self.load_favorites() if f.get("uri") != uri]
             favorites.insert(0, info)
             self.save_favorites(favorites[:MAX_FAVORITES])
         return {"ok": True, "favorite": info, "message": f"Saved {info['name']}"}
 
     def remove_favorite(self, body):
-        with self.favorites_lock:
+        with self.data_lock:
             favorites = [f for f in self.load_favorites() if f.get("uri") != body.get("uri")]
             self.save_favorites(favorites)
         return {"ok": True}
@@ -549,7 +586,7 @@ class App:
         volume = body.get("volume")
         run_hatch(lambda ds: hs.hatch_play_url(hs.find_hatch_device(ds, body.get("hatch")), url,
                                                int(volume) if volume is not None else None))
-        return {"ok": True, "message": "Hatch is streaming"}
+        return {"ok": True, "message": "Sent to the Hatch. If it stays quiet, it couldn't use that file."}
 
 
 ROUTES = {
@@ -691,15 +728,21 @@ def make_handler(app, guard, secure_cookies=False, public_url=None, media_token=
             self.end_headers()
             if method == "HEAD":
                 return
-            with open(path, "rb") as f:
-                f.seek(start)
-                remaining = end - start + 1
-                while remaining:
-                    chunk = f.read(min(65536, remaining))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
+            sent = 0
+            try:
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    remaining = end - start + 1
+                    while remaining:
+                        chunk = f.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        sent += len(chunk)
+                        remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                # Worth knowing during Hatch experiments: it stopped downloading early.
+                print(f"media {method} {name}: client closed the connection after {sent} bytes", flush=True)
 
         def handle_request(self, method):
             url = urlparse(self.path)

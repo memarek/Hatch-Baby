@@ -135,10 +135,18 @@ def start_spotify(sp, uri, device_name, volume, shuffle):
     else:
         kwargs["context_uri"] = uri
     sp.start_playback(**kwargs)
+    # The music is playing now; a speaker refusing volume or shuffle shouldn't
+    # turn that into a failure (and skip the nightlight).
     if volume is not None and device.get("supports_volume", True):
-        sp.volume(volume, device_id=device["id"])
+        try:
+            sp.volume(volume, device_id=device["id"])
+        except Exception as e:
+            print(f"Spotify: couldn't set volume on {device['name']}: {e}")
     if shuffle is not None:
-        sp.shuffle(shuffle, device_id=device["id"])
+        try:
+            sp.shuffle(shuffle, device_id=device["id"])
+        except Exception as e:
+            print(f"Spotify: couldn't set shuffle on {device['name']}: {e}")
     print(f"Spotify playing {uri} on {device['name']}")
     return device
 
@@ -236,6 +244,13 @@ def hatch_sounds(device):
     tracks = _track_enum(device)
     if tracks is not None:
         return [{"id": t.name, "title": spaced(t.name)} for t in tracks if t.name not in ("NONE", "Stream")]
+    if type(device).__name__ == "RestBaby":
+        # The Rest Baby only accepts its own (105xx) sound ids, not the older
+        # ids in device.sounds, so list the library's Rest Baby tracks.
+        from hatch_rest_api import RestBabyAudioTrack
+
+        tracks = [t for t in RestBabyAudioTrack if t is not RestBabyAudioTrack.NONE]
+        return sorted(({"id": t.value, "title": spaced(t.name)} for t in tracks), key=lambda s: s["title"])
     if not hasattr(device, "set_sound"):
         return []
     sounds = [s for s in (getattr(device, "sounds", None) or [])
@@ -256,7 +271,7 @@ def hatch_play_sound(device, sound_id):
             device.set_on(True)
         device.set_audio_track(track)
         return spaced(track.name)
-    if not hasattr(device, "set_sound"):
+    if type(device).__name__ != "RestBaby" and not hasattr(device, "set_sound"):
         raise ControlError("This Hatch can't change sounds from here. Use the Hatch app.")
     available = {s["id"]: s["title"] for s in hatch_sounds(device)}
     try:
@@ -265,7 +280,12 @@ def hatch_play_sound(device, sound_id):
         sound_id = None
     if sound_id not in available:
         raise ControlError("That sound isn't available on this Hatch.")
-    device.set_sound(sound_id)
+    if type(device).__name__ == "RestBaby":
+        from hatch_rest_api import RestBabyAudioTrack
+
+        device.set_audio_track(RestBabyAudioTrack(sound_id))
+    else:
+        device.set_sound(sound_id)
     return available[sound_id]
 
 

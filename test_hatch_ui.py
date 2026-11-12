@@ -443,6 +443,53 @@ class FeatureTests(unittest.TestCase):
             "subtitle": "Playlist · Spotify", "image": "https://image-cdn-fa.spotifycdn.com/x"})
 
 
+    def test_hatch_status_reports_offline_when_link_is_down(self):
+        snapshot = {"name": "Nursery", "online": True, "playing": True, "sound": "Dryer"}
+        with mock.patch.object(hatch_ui, "run_hatch", lambda action: snapshot), \
+             mock.patch.object(hatch_ui.hatch_connection, "link_up", False):
+            self.assertFalse(json.loads(self.request("GET", "/api/hatch-status").body)["online"])
+        with mock.patch.object(hatch_ui, "run_hatch", lambda action: snapshot), \
+             mock.patch.object(hatch_ui.hatch_connection, "link_up", True):
+            self.assertTrue(json.loads(self.request("GET", "/api/hatch-status").body)["online"])
+
+    def test_only_the_newest_hatch_job_reports(self):
+        first_may_finish = threading.Event()
+        order = []
+
+        def first(ds):
+            first_may_finish.wait(5)
+            order.append("first")
+
+        lock = threading.Lock()
+        def run_serially(action):
+            with lock:  # like the real connection lock
+                return action([])
+
+        with mock.patch.object(hatch_ui, "run_hatch", run_serially):
+            self.app.run_hatch_job(first, "First done")
+            time.sleep(0.05)
+            self.app.run_hatch_job(lambda ds: order.append("second"), "Second done")
+            first_may_finish.set()
+            for _ in range(200):
+                if order == ["first"]:
+                    # the older job finished, but the newer one is still running
+                    self.assertTrue(self.app.hatch_job["busy"])
+                if not self.app.hatch_job["busy"] and len(order) == 2:
+                    break
+                time.sleep(0.01)
+        self.assertEqual(order, ["first", "second"])
+        self.assertEqual(self.app.hatch_job["message"], "Second done")
+
+    def test_settings_saves_do_not_lose_each_other(self):
+        bodies = [{"sleep_sound": {"id": 10517, "title": "Dryer"}}, {"bedtime_volume": 30}] * 5
+        threads = [threading.Thread(target=self.app.update_settings, args=(body,)) for body in bodies]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(self.app.load_settings(), {"sleep_sound": {"id": 10517, "title": "Dryer"}, "bedtime_volume": 30})
+
+
 class LinkPreviewTests(unittest.TestCase):
     def fake_get(self, payload, fail=False):
         res = mock.Mock()
@@ -472,7 +519,9 @@ class HatchConnectionTests(unittest.TestCase):
         self.fail_with = None
         self.expiration = time.time() + 3600
 
-        async def fake_get_rest_devices(email, password, client_session=None):
+        async def fake_get_rest_devices(email, password, client_session=None,
+                                        on_connection_interrupted=None, on_connection_resumed=None):
+            self.interrupted, self.resumed = on_connection_interrupted, on_connection_resumed
             if self.fail_with:
                 raise self.fail_with
             self.logins += 1
@@ -516,6 +565,31 @@ class HatchConnectionTests(unittest.TestCase):
         self.conn.run(lambda ds: None)
         self.assertEqual(self.logins, 1)
         self.assertEqual(self.conn.backoff, hatch_ui.HatchConnection.MIN_BACKOFF)
+
+    def test_any_login_failure_waits_before_retrying(self):
+        from hatch_rest_api import AuthError
+        self.fail_with = AuthError("bad password")
+        with self.assertRaises(hs.ControlError) as first:
+            self.conn.run(lambda ds: None)
+        self.assertIn("email/password", str(first.exception))
+        self.fail_with = None
+        with self.assertRaises(hs.ControlError):  # no new attempt until the wait is over
+            self.conn.run(lambda ds: None)
+        self.assertEqual(self.logins, 0)
+        self.fail_with = OSError("network down")
+        self.conn.retry_at = 0
+        with mock.patch("traceback.print_exc"), self.assertRaises(hs.ControlError) as network:
+            self.conn.run(lambda ds: None)
+        self.assertIn("Couldn't log in", str(network.exception))
+        self.assertEqual(self.conn.backoff, 4 * hatch_ui.HatchConnection.MIN_BACKOFF)
+
+    def test_tracks_whether_the_live_connection_is_up(self):
+        self.conn.run(lambda ds: None)
+        self.assertTrue(self.conn.link_up)
+        self.interrupted(None, "wifi blip")
+        self.assertFalse(self.conn.link_up)
+        self.resumed(None, 0, True)
+        self.assertTrue(self.conn.link_up)
 
     def test_unexpected_error_logs_in_again_next_time(self):
         with self.assertRaises(RuntimeError):

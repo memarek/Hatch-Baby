@@ -192,14 +192,25 @@ install -m 644 "$REPO_DIR/deploy/bedtime.service" /etc/systemd/system/bedtime.se
 systemctl daemon-reload
 systemctl enable bedtime >/dev/null
 
-tailscale serve reset
+# Only clear Tailscale's routing when switching between public and private: on a
+# plain update the commands below just re-apply it, so the site never goes dark.
+CURRENTLY=private
+tailscale funnel status 2>/dev/null | grep -q "Funnel on" && CURRENTLY=public
+[ "$CURRENTLY" = "$(get_env BEDTIME_VISIBILITY)" ] || tailscale serve reset
+
 if [ "$(get_env BEDTIME_VISIBILITY)" = public ]; then
   step "Publishing it at a public HTTPS address (login page first)"
   if [ "$(get_env UI_PASSWORD | wc -c)" -lt 21 ]; then
     echo "  Warning: your Bedtime password is short for a public site."
     echo "  Run: sudo ./deploy/setup.sh --new-password"
   fi
-  tailscale funnel --bg 8888
+  if ! tailscale funnel --bg 8888; then
+    # Keep it reachable from your Tailscale devices rather than not at all.
+    tailscale serve --bg 8888
+    echo "Couldn't make it public, so it's on your Tailscale devices only for now."
+    echo "Fix the problem above, then run: sudo ./deploy/setup.sh --public"
+    exit 1
+  fi
   WHERE="On any phone or computer (no Tailscale app needed), open:"
 else
   step "Serving it over HTTPS to your Tailscale devices only"
