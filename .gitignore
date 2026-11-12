@@ -2,6 +2,6 @@
 .spotify_token_cache
 __pycache__/
 .venv/
-favorites.json
-settings.json
-.ui_secret
+/favorites.json
+/settings.json
+/.ui_secret
