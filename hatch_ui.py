@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import hatch_spotify as hs
+import media
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 SESSION_COOKIE = "bedtime_session"
@@ -573,7 +574,7 @@ ROUTES = {
 }
 
 
-def make_handler(app, guard, secure_cookies=False, public_url=None):
+def make_handler(app, guard, secure_cookies=False, public_url=None, media_token=None, media_dir=media.MEDIA_DIR):
     public_host = urlparse(public_url).netloc if public_url else None
     headers_to_send = dict(SECURITY_HEADERS)
     if secure_cookies:  # served over HTTPS: tell browsers never to use plain HTTP
@@ -659,8 +660,54 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
             error = "locked" if ok is None else "wrong"
             return self.redirect(f"/login?error={error}")
 
+        def send_media(self, method, token, name):
+            """Audio for the Hatch to download: no login, unguessable address, byte ranges."""
+            found = media_token and media.resolve(token, media_token, name, media_dir)
+            agent = self.headers.get("User-Agent", "-")
+            if not found:
+                print(f"media {method} {name} -> 404 (agent: {agent})", flush=True)
+                return self.send(404, b"", "text/plain")
+            path, content_type = found
+            size = os.path.getsize(path)
+            wanted = media.parse_range(self.headers.get("Range"), size)
+            if wanted == "unsatisfiable":
+                print(f"media {method} {name} range={self.headers.get('Range')} -> 416 (agent: {agent})", flush=True)
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            start, end = wanted or (0, size - 1)
+            status = 206 if wanted else 200
+            print(f"media {method} {name} range={self.headers.get('Range', '-')} -> {status} "
+                  f"bytes {start}-{end}/{size} (agent: {agent})", flush=True)
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            if wanted:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.end_headers()
+            if method == "HEAD":
+                return
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+
         def handle_request(self, method):
             url = urlparse(self.path)
+            parts = url.path.split("/")
+            if method in ("GET", "HEAD") and len(parts) == 4 and parts[1] == "media":
+                return self.send_media(method, parts[2], parts[3])
+            if method == "HEAD":
+                return self.send(405, b"", "text/plain")
             if method == "POST" and not self.same_origin():
                 return self.send(403, {"error": "Cross-site request blocked"})
             if method == "GET" and url.path in STATIC_FILES:
@@ -719,6 +766,9 @@ def make_handler(app, guard, secure_cookies=False, public_url=None):
         def do_GET(self):
             self.handle_request("GET")
 
+        def do_HEAD(self):
+            self.handle_request("HEAD")
+
         def do_POST(self):
             self.handle_request("POST")
 
@@ -747,7 +797,7 @@ def main():
     app.login_enabled = guard.enabled
     secure_cookies = env("UI_SECURE_COOKIES", "") == "1"
 
-    handler = make_handler(app, guard, secure_cookies, env("UI_PUBLIC_URL"))
+    handler = make_handler(app, guard, secure_cookies, env("UI_PUBLIC_URL"), media.media_token(guard.secret))
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Bedtime UI running on http://{args.host}:{args.port}  (Ctrl+C to stop)")
     if not guard.enabled:

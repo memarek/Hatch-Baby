@@ -510,6 +510,15 @@ def cmd_wav_info(args):
     print(json.dumps(info, indent=2))
 
 
+def cmd_make_test_sounds(args):
+    import media
+
+    public_url = require_env("UI_PUBLIC_URL")
+    token = media.media_token(media.read_secret(os.environ.get("UI_SECRET_FILE", ".ui_secret")))
+    for name in media.make_test_sounds():
+        print(media.media_url(public_url, token, name))
+
+
 def cmd_hatch_inspect(args):
     def inspect(devices):
         device = find_hatch_device(devices, args.hatch)
@@ -615,6 +624,9 @@ def build_parser():
     p = sub.add_parser("hatch-inspect", help="show what the Hatch reports about itself (investigation)")
     p.add_argument("--hatch", default=env("HATCH_DEVICE"))
     p.set_defaults(func=cmd_hatch_inspect)
+
+    p = sub.add_parser("make-test-sounds", help="write test tones the server hosts for the Hatch, print their URLs")
+    p.set_defaults(func=cmd_make_test_sounds)
 
     p = sub.add_parser("wav-info", help="show the audio format of a sound file at a URL")
     p.add_argument("url")

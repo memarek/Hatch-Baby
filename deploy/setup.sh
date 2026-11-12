@@ -36,7 +36,7 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
 step "Installing system packages and automatic security updates"
 apt-get update -q
-apt-get install -y -q python3 python3-venv curl unattended-upgrades
+apt-get install -y -q python3 python3-venv curl unattended-upgrades ffmpeg
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'CONF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
@@ -47,7 +47,7 @@ id bedtime >/dev/null 2>&1 || useradd --system --home-dir "$STATE_DIR" --shell /
 
 step "Installing the app to $APP_DIR (owned by root, read-only to the app)"
 install -d -m 755 "$APP_DIR"
-cp -r "$REPO_DIR/hatch_spotify.py" "$REPO_DIR/hatch_ui.py" "$REPO_DIR/ui" "$REPO_DIR/requirements.txt" "$APP_DIR/"
+cp -r "$REPO_DIR/hatch_spotify.py" "$REPO_DIR/hatch_ui.py" "$REPO_DIR/media.py" "$REPO_DIR/ui" "$REPO_DIR/requirements.txt" "$APP_DIR/"
 # hatch_rest_api needs Python 3.12+. Older systems (Debian 12, Raspberry Pi OS
 # bookworm) get a private Python from uv under $APP_DIR, leaving the system alone.
 is_new_enough() { "$1" -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; }

@@ -5,3 +5,4 @@ __pycache__/
 /favorites.json
 /settings.json
 /.ui_secret
+/media/
